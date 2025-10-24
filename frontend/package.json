@@ -1,0 +1,22 @@
+{
+  "name": "geospatial-platform-frontend",
+  "version": "1.0.0",
+  "description": "deck.gl frontend for geospatial platform",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@deck.gl/core": "^9.0.0",
+    "@deck.gl/layers": "^9.0.0",
+    "@deck.gl/geo-layers": "^9.0.0",
+    "@loaders.gl/core": "^4.2.0",
+    "@loaders.gl/geoarrow": "^4.2.0",
+    "@loaders.gl/json": "^4.2.0",
+    "maplibre-gl": "^4.0.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}

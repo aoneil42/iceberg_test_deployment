@@ -1,0 +1,73 @@
+server:
+  applicationConnectors:
+    - type: http
+      port: 8181
+  adminConnectors:
+    - type: http
+      port: 8182
+
+# Metastore configuration
+metaStoreManager:
+  type: dynamodb-s3
+  conf:
+    # DynamoDB configuration
+    dynamodb:
+      tableName: ${DYNAMODB_TABLE}
+      region: ${AWS_REGION}
+      endpoint: https://dynamodb.${AWS_REGION}.amazonaws.com
+    
+    # S3 configuration for metadata storage
+    s3:
+      bucket: ${S3_BUCKET}
+      prefix: polaris-metadata
+      region: ${AWS_REGION}
+
+# Default warehouse configuration
+defaultCatalog:
+  name: polaris
+  type: INTERNAL
+  properties:
+    warehouse: s3://${S3_BUCKET}/warehouse
+    default-base-location: s3://${S3_BUCKET}/warehouse/default
+
+# Catalog properties
+catalogProperties:
+  default-namespace: default
+
+# Authentication (disabled for eval)
+authenticator:
+  type: none
+
+# Authorization (permissive for eval)
+authorizer:
+  type: allow-all
+
+# CORS configuration
+cors:
+  enabled: true
+  allowedOrigins:
+    - "*"
+  allowedMethods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - OPTIONS
+  allowedHeaders:
+    - "*"
+  exposedHeaders:
+    - "*"
+
+# Logging configuration
+logging:
+  level: INFO
+  appenders:
+    - type: console
+      threshold: INFO
+      target: stdout
+      logFormat: "%-5p [%d{ISO8601}] [%t] %c: %m%n"
+
+# Feature flags
+features:
+  enableIcebergRestCatalog: true
+  enableMultiTableTransactions: true
