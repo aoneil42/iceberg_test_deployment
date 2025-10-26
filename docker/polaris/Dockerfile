@@ -4,17 +4,15 @@ FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
 
 # Install dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
-    wget \
-    ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    curl=7.* \
+    wget=1.* \
+    && rm -rf /var/lib/apt/lists/*
 
 # Download Apache Polaris
 ARG POLARIS_VERSION=0.1.0
 RUN wget https://github.com/apache/polaris/releases/download/v${POLARIS_VERSION}/polaris-service-${POLARIS_VERSION}-all.jar -O polaris.jar
-
+RUN wget --progress=dot:giga https://github.com/polaris-catalog/polaris/releases/download/v0.1.0/polaris-server.jar
 # Copy configuration files
 COPY polaris-server.yml /app/conf/polaris-server.yml
 COPY entrypoint.sh /app/entrypoint.sh
