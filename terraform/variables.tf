@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Project name for resource naming"
   type        = string
-  default     = "geospatial-platform"
+  default     = "iceberg-test"
 }
 
 variable "environment" {
@@ -31,7 +31,7 @@ variable "volume_size" {
 variable "allowed_ssh_cidr" {
   description = "CIDR block allowed for SSH access"
   type        = string
-  default     = "0.0.0.0/0" # Replace with your IP/32 in production
+  default     = "67.174.101.14/32" # Replace with your IP/32 in production
 }
 
 variable "allowed_api_cidr" {

@@ -1,0 +1,321 @@
+name: Deploy Geospatial Platform
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-west-2
+  TF_VERSION: 1.6.0
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: |
+          cd terraform
+          terraform fmt -check
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init -backend=false
+
+      - name: Terraform Validate
+        run: |
+          cd terraform
+          terraform validate
+
+      - name: Lint Dockerfiles
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/polaris/Dockerfile
+
+      - name: Lint OGC API Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/ogc-api/Dockerfile
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Lint Python Code
+        run: |
+          cd docker/ogc-api
+          pip install ruff mypy types-requests
+          ruff check app/ || true
+          mypy app/ --ignore-missing-imports || true
+
+  build:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Polaris Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd docker/polaris
+          docker build -t $ECR_REGISTRY/polaris-catalog:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/polaris-catalog:latest .
+          docker push $ECR_REGISTRY/polaris-catalog:$IMAGE_TAG
+          docker push $ECR_REGISTRY/polaris-catalog:latest
+
+      - name: Build and Push OGC API Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd docker/ogc-api
+          docker build -t $ECR_REGISTRY/ogc-api-features:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/ogc-api-features:latest .
+          docker push $ECR_REGISTRY/ogc-api-features:$IMAGE_TAG
+          docker push $ECR_REGISTRY/ogc-api-features:latest
+
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init \
+            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="key=iceberg-test-deployment/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Terraform Plan
+        run: |
+          cd terraform
+          terraform plan -out=tfplan
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/tfplan
+          retention-days: 5
+
+  deploy-infra:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init \
+            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="key=iceberg-test-deployment/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Download Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve tfplan
+
+      - name: Get Terraform Outputs
+        id: tf-outputs
+        run: |
+          cd terraform
+          echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
+          echo "s3_bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+          echo "dynamodb_table=$(terraform output -raw dynamodb_table_name)" >> $GITHUB_OUTPUT
+          terraform output -json > ../tf_outputs.json
+
+      - name: Upload Terraform Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: tf_outputs.json
+          retention-days: 30
+
+  deploy-app:
+    name: Deploy Application
+    runs-on: ubuntu-latest
+    needs: deploy-infra
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Terraform Outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get EC2 Details
+        id: ec2-details
+        run: |
+          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
+          S3_BUCKET=$(jq -r '.s3_bucket_name.value' tf_outputs.json)
+          DYNAMODB_TABLE=$(jq -r '.dynamodb_table_name.value' tf_outputs.json)
+          echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
+          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+          echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ steps.ec2-details.outputs.ec2_ip }} >> ~/.ssh/known_hosts
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate docker-compose.yml
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          S3_BUCKET: ${{ steps.ec2-details.outputs.s3_bucket }}
+          DYNAMODB_TABLE: ${{ steps.ec2-details.outputs.dynamodb_table }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          envsubst < docker/docker-compose.yml.template > docker-compose.yml
+
+      - name: Deploy to EC2
+        env:
+          EC2_IP: ${{ steps.ec2-details.outputs.ec2_ip }}
+        run: |
+          # Copy docker-compose.yml to EC2
+          scp -o StrictHostKeyChecking=no docker-compose.yml ec2-user@${EC2_IP}:~/deployment/
+
+          # Deploy on EC2
+          ssh -o StrictHostKeyChecking=no ec2-user@${EC2_IP} << 'ENDSSH'
+            cd ~/deployment
+            
+            # Login to ECR
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+            
+            # Pull latest images
+            docker-compose pull
+            
+            # Stop existing containers
+            docker-compose down
+            
+            # Start services
+            docker-compose up -d
+            
+            # Wait for services
+            echo "Waiting for services to start..."
+            sleep 30
+            
+            # Check status
+            docker-compose ps
+          ENDSSH
+
+      - name: Health Check
+        env:
+          EC2_IP: ${{ steps.ec2-details.outputs.ec2_ip }}
+        run: |
+          chmod +x scripts/health_check.sh
+          ./scripts/health_check.sh ${{ steps.ec2-details.outputs.ec2_ip }}
+
+  test:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy-app
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Terraform Outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+
+      - name: Run Smoke Tests
+        run: |
+          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
+          
+          echo "Testing Polaris catalog..."
+          curl -f http://${EC2_IP}:8181/v1/config || exit 1
+          
+          echo "Testing OGC API landing page..."
+          curl -f http://${EC2_IP}:8080/ || exit 1
+          
+          echo "Testing OGC API conformance..."
+          curl -f http://${EC2_IP}:8080/conformance || exit 1
+          
+          echo "Testing OGC API collections..."
+          curl -f http://${EC2_IP}:8080/collections || exit 1
+          
+          echo "All smoke tests passed!"
