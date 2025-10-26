@@ -452,63 +452,6 @@ jobs:
           fi
           echo "✅ Images pulled"
           
-- name: Deploy to EC2 via SSM
-        env:
-          INSTANCE_ID: ${{ steps.ec2-details.outputs.ec2_instance_id }}
-          S3_BUCKET: ${{ steps.ec2-details.outputs.s3_bucket }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          # Stage 1: Setup and download
-          echo "=== Stage 1: Setup ==="
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "mkdir -p ~/deployment",
-              "cd ~/deployment",
-              "aws s3 cp s3://'"$S3_BUCKET"'/deployment/docker-compose.yml .",
-              "cat docker-compose.yml"
-            ]' \
-            --region "$AWS_REGION" \
-            --output text \
-            --query "Command.CommandId")
-          
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION"
-          
-          STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "Status" --output text)
-          if [ "$STATUS" != "Success" ]; then
-            echo "Setup failed!"
-            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text
-            exit 1
-          fi
-          echo "✅ Setup complete"
-          
-          # Stage 2: ECR Login and Pull
-          echo "=== Stage 2: Pull Images ==="
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --timeout-seconds 600 \
-            --parameters 'commands=[
-              "cd ~/deployment",
-              "aws ecr get-login-password --region '"$AWS_REGION"' | docker login --username AWS --password-stdin '"$ECR_REGISTRY"'",
-              "docker-compose pull 2>&1 | tail -20"
-            ]' \
-            --region "$AWS_REGION" \
-            --output text \
-            --query "Command.CommandId")
-          
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION"
-          
-          STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "Status" --output text)
-          if [ "$STATUS" != "Success" ]; then
-            echo "Pull failed!"
-            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text
-            exit 1
-          fi
-          echo "✅ Images pulled"
-          
           # Stage 3: Stop Old Containers
           echo "=== Stage 3: Stop Old Containers ==="
           COMMAND_ID=$(aws ssm send-command \
@@ -613,6 +556,7 @@ jobs:
             --output text
           
           echo "✅ Deployment complete"
+
       - name: Health Check
         env:
           EC2_IP: ${{ steps.ec2-details.outputs.ec2_ip }}
