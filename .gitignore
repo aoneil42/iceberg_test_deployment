@@ -9,6 +9,7 @@ terraform.tfvars
 # Python
 # created by virtualenv automatically
 py/bin
+py
 __pycache__/
 *.py[cod]
 *$py.class
@@ -42,3 +43,4 @@ Thumbs.db
 etl/data/
 *.geojson
 *.parquet
+/py/
