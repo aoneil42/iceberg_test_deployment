@@ -6,11 +6,11 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    curl \
-    ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+    gcc=4:* \
+    g++=4:* \
+    curl=7.* \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
