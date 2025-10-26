@@ -1,6 +1,6 @@
 resource "aws_iam_role" "geospatial_platform" {
   name = "${var.project_name}-ec2-role-${random_id.suffix.hex}"
-  
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -13,14 +13,14 @@ resource "aws_iam_role" "geospatial_platform" {
       }
     ]
   })
-  
+
   tags = local.common_tags
 }
 
 resource "aws_iam_instance_profile" "geospatial_platform" {
   name = "${var.project_name}-instance-profile-${random_id.suffix.hex}"
   role = aws_iam_role.geospatial_platform.name
-  
+
   tags = local.common_tags
 }
 
@@ -28,7 +28,7 @@ resource "aws_iam_instance_profile" "geospatial_platform" {
 resource "aws_iam_role_policy" "s3_access" {
   name = "s3-access"
   role = aws_iam_role.geospatial_platform.id
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -59,7 +59,7 @@ resource "aws_iam_role_policy" "s3_access" {
 resource "aws_iam_role_policy" "dynamodb_access" {
   name = "dynamodb-access"
   role = aws_iam_role.geospatial_platform.id
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -90,7 +90,7 @@ resource "aws_iam_role_policy" "dynamodb_access" {
 resource "aws_iam_role_policy" "ecr_access" {
   name = "ecr-access"
   role = aws_iam_role.geospatial_platform.id
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -121,7 +121,7 @@ resource "aws_iam_role_policy" "ecr_access" {
 resource "aws_iam_role_policy" "cloudwatch_logs" {
   name = "cloudwatch-logs"
   role = aws_iam_role.geospatial_platform.id
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

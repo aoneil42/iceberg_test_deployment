@@ -1,6 +1,6 @@
 terraform {
   required_version = ">= 1.6"
-  
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -11,7 +11,7 @@ terraform {
       version = "~> 3.5"
     }
   }
-  
+
   backend "s3" {
     # Configured via CLI: bucket, key, region
     encrypt = true
@@ -20,7 +20,7 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
-  
+
   default_tags {
     tags = {
       Project     = var.project_name
@@ -42,17 +42,17 @@ data "aws_caller_identity" "current" {}
 data "aws_ami" "amazon_linux_2023_arm64" {
   most_recent = true
   owners      = ["amazon"]
-  
+
   filter {
     name   = "name"
     values = ["al2023-ami-2023.*-kernel-6.1-arm64"]
   }
-  
+
   filter {
     name   = "architecture"
     values = ["arm64"]
   }
-  
+
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
@@ -73,8 +73,8 @@ data "aws_subnets" "default" {
 
 # Local variables
 locals {
-  bucket_name       = "${var.project_name}-${random_id.suffix.hex}"
-  dynamodb_table    = "${var.project_name}-catalog-${random_id.suffix.hex}"
+  bucket_name    = "${var.project_name}-${random_id.suffix.hex}"
+  dynamodb_table = "${var.project_name}-catalog-${random_id.suffix.hex}"
   common_tags = {
     Project     = var.project_name
     Environment = var.environment

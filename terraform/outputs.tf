@@ -56,8 +56,8 @@ output "ssh_command" {
 output "deployment_info" {
   description = "Deployment information"
   value = {
-    region          = var.aws_region
-    instance_type   = var.instance_type
+    region            = var.aws_region
+    instance_type     = var.instance_type
     availability_zone = aws_instance.geospatial_platform.availability_zone
   }
 }
