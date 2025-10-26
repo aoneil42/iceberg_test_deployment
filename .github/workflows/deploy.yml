@@ -69,6 +69,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -80,7 +88,7 @@ jobs:
         run: |
           aws ecr describe-repositories --repository-names polaris-catalog --region ${{ env.AWS_REGION }} || \
             aws ecr create-repository --repository-name polaris-catalog --region ${{ env.AWS_REGION }}
-        
+          
           aws ecr describe-repositories --repository-names ogc-api-features --region ${{ env.AWS_REGION }} || \
             aws ecr create-repository --repository-name ogc-api-features --region ${{ env.AWS_REGION }}
 
@@ -88,27 +96,43 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Polaris Image
+      - name: Build and Push Polaris Image (Multi-arch)
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           cd docker/polaris
-          docker build -t $ECR_REGISTRY/polaris-catalog:$IMAGE_TAG .
-          docker build -t $ECR_REGISTRY/polaris-catalog:latest .
-          docker push $ECR_REGISTRY/polaris-catalog:$IMAGE_TAG
-          docker push $ECR_REGISTRY/polaris-catalog:latest
+          
+          echo "Building multi-architecture image for linux/amd64 and linux/arm64..."
+          
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag $ECR_REGISTRY/polaris-catalog:$IMAGE_TAG \
+            --tag $ECR_REGISTRY/polaris-catalog:latest \
+            --push \
+            --progress=plain \
+            .
+          
+          echo "✅ Polaris multi-arch image built and pushed"
 
-      - name: Build and Push OGC API Image
+      - name: Build and Push OGC API Image (Multi-arch)
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           cd docker/ogc-api
-          docker build -t $ECR_REGISTRY/ogc-api-features:$IMAGE_TAG .
-          docker build -t $ECR_REGISTRY/ogc-api-features:latest .
-          docker push $ECR_REGISTRY/ogc-api-features:$IMAGE_TAG
-          docker push $ECR_REGISTRY/ogc-api-features:latest
+          
+          echo "Building multi-architecture image for linux/amd64 and linux/arm64..."
+          
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag $ECR_REGISTRY/ogc-api-features:$IMAGE_TAG \
+            --tag $ECR_REGISTRY/ogc-api-features:latest \
+            --push \
+            --progress=plain \
+            .
+          
+          echo "✅ OGC API multi-arch image built and pushed"
 
   plan:
     name: Terraform Plan
