@@ -187,6 +187,13 @@ jobs:
           name: terraform-plan
           path: terraform/
 
+      - name: Import existing ECR repositories
+        working-directory: terraform
+        run: |
+          terraform import aws_ecr_repository.polaris polaris-catalog || true
+          terraform import aws_ecr_repository.ogc_api ogc-api-features || true
+        continue-on-error: true
+
       - name: Terraform Apply
         run: |
           cd terraform
