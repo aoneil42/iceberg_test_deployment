@@ -84,32 +84,3 @@ resource "aws_vpc_security_group_egress_rule" "all" {
   }
 }
 
-# Add GitHub Actions access for Polaris
-resource "aws_vpc_security_group_ingress_rule" "polaris_github_actions" {
-  security_group_id = aws_security_group.geospatial_platform.id
-
-  description = "Polaris catalog API for GitHub Actions"
-  from_port   = 8181
-  to_port     = 8181
-  ip_protocol = "tcp"
-  cidr_ipv4   = "0.0.0.0/0"
-
-  tags = {
-    Name = "polaris-github-actions"
-  }
-}
-
-# Add GitHub Actions access for OGC API
-resource "aws_vpc_security_group_ingress_rule" "ogc_api_github_actions" {
-  security_group_id = aws_security_group.geospatial_platform.id
-
-  description = "OGC API for GitHub Actions"
-  from_port   = 8080
-  to_port     = 8080
-  ip_protocol = "tcp"
-  cidr_ipv4   = "0.0.0.0/0"
-
-  tags = {
-    Name = "ogc-github-actions"
-  }
-}

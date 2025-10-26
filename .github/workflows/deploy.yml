@@ -215,10 +215,97 @@ jobs:
           path: tf_outputs.json
           retention-days: 30
 
+  verify-security-groups:
+    name: Verify Security Groups
+    runs-on: ubuntu-latest
+    needs: deploy-infra
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Download Terraform Outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify and Attach Security Group
+        run: |
+          set -e
+          
+          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
+          INSTANCE_ID=$(jq -r '.ec2_instance_id.value' tf_outputs.json)
+          
+          echo "Instance ID: $INSTANCE_ID"
+          echo "Instance IP: $EC2_IP"
+          
+          # Get security group ID
+          echo "Finding security group..."
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=tag:Name,Values=iceberg-test-sg" \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text)
+          
+          if [ "$SG_ID" == "None" ] || [ -z "$SG_ID" ]; then
+            echo "❌ Error: Security group not found!"
+            exit 1
+          fi
+          
+          echo "Security Group ID: $SG_ID"
+          
+          # Check if security group is already attached
+          echo "Checking security group attachment..."
+          CURRENT_SGS=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query 'Reservations[0].Instances[0].SecurityGroups[*].GroupId' \
+            --output json)
+          
+          echo "Current security groups: $CURRENT_SGS"
+          
+          if echo "$CURRENT_SGS" | grep -q "$SG_ID"; then
+            echo "✅ Security group already attached"
+          else
+            echo "⚠️  Security group not attached, attaching now..."
+            aws ec2 modify-instance-attribute \
+              --instance-id $INSTANCE_ID \
+              --groups $SG_ID
+            
+            echo "✅ Security group attached"
+            echo "Waiting 15 seconds for changes to propagate..."
+            sleep 15
+          fi
+          
+          # Verify security group rules exist
+          echo "Verifying security group rules..."
+          RULES=$(aws ec2 describe-security-groups \
+            --group-ids $SG_ID \
+            --query 'SecurityGroups[0].IpPermissions[?FromPort==`8181` || FromPort==`8080`].[FromPort,ToPort,IpRanges[0].CidrIp]' \
+            --output text)
+          
+          echo "Security group rules for ports 8080/8181:"
+          echo "$RULES"
+          
+          if [ -z "$RULES" ]; then
+            echo "⚠️  Warning: No rules found for ports 8080/8181"
+          fi
+          
+          # Final verification
+          echo "Final security group check..."
+          aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query 'Reservations[0].Instances[0].{SecurityGroups:SecurityGroups[*].[GroupId,GroupName]}' \
+            --output json
+          
+          echo "✅ Security group verification complete"
+
   deploy-app:
     name: Deploy Application
     runs-on: ubuntu-latest
-    needs: deploy-infra
+    needs: verify-security-groups
     if: github.ref == 'refs/heads/main'
     environment: production
     steps:
@@ -398,23 +485,69 @@ jobs:
         with:
           name: terraform-outputs
 
+      - name: Wait for Services with Retry
+        run: |
+          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
+          MAX_RETRIES=30
+          RETRY_DELAY=10
+          
+          echo "Waiting for Polaris to become available at http://${EC2_IP}:8181..."
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i/$MAX_RETRIES..."
+            
+            if curl -f -s -o /dev/null http://${EC2_IP}:8181/v1/config; then
+              echo "✅ Polaris is available!"
+              break
+            fi
+            
+            if [ $i -eq $MAX_RETRIES ]; then
+              echo "❌ Polaris failed to become available after $((MAX_RETRIES * RETRY_DELAY)) seconds"
+              echo "Checking security group..."
+              exit 1
+            fi
+            
+            echo "Polaris not ready yet, waiting ${RETRY_DELAY} seconds..."
+            sleep $RETRY_DELAY
+          done
+          
+          echo "Waiting for OGC API to become available at http://${EC2_IP}:8080..."
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i/$MAX_RETRIES..."
+            
+            if curl -f -s -o /dev/null http://${EC2_IP}:8080/; then
+              echo "✅ OGC API is available!"
+              break
+            fi
+            
+            if [ $i -eq $MAX_RETRIES ]; then
+              echo "❌ OGC API failed to become available after $((MAX_RETRIES * RETRY_DELAY)) seconds"
+              exit 1
+            fi
+            
+            echo "OGC API not ready yet, waiting ${RETRY_DELAY} seconds..."
+            sleep $RETRY_DELAY
+          done
+
       - name: Run Smoke Tests
         run: |
           EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
           
-          echo "Waiting 60 seconds for services to fully start..."
-          sleep 60
-          
           echo "Testing Polaris catalog..."
           curl -f http://${EC2_IP}:8181/v1/config || exit 1
+          echo "✅ Polaris test passed"
           
           echo "Testing OGC API landing page..."
           curl -f http://${EC2_IP}:8080/ || exit 1
+          echo "✅ OGC API landing page test passed"
           
           echo "Testing OGC API conformance..."
           curl -f http://${EC2_IP}:8080/conformance || exit 1
+          echo "✅ OGC API conformance test passed"
           
           echo "Testing OGC API collections..."
           curl -f http://${EC2_IP}:8080/collections || exit 1
+          echo "✅ OGC API collections test passed"
           
-          echo "All smoke tests passed!"
+          echo "🎉 All smoke tests passed!"
