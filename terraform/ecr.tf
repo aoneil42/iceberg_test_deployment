@@ -16,7 +16,7 @@ resource "aws_ecr_repository" "polaris" {
 }
 
 resource "aws_ecr_repository" "ogc_api" {
-  name                 = "ogc-api"
+  name                 = "ogc-api-features"
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {

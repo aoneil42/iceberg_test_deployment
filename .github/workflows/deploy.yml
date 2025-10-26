@@ -81,8 +81,8 @@ jobs:
           aws ecr describe-repositories --repository-names polaris-catalog --region ${{ env.AWS_REGION }} || \
             aws ecr create-repository --repository-name polaris-catalog --region ${{ env.AWS_REGION }}
         
-          aws ecr describe-repositories --repository-names ogc-api --region ${{ env.AWS_REGION }} || \
-            aws ecr create-repository --repository-name ogc-api --region ${{ env.AWS_REGION }}
+          aws ecr describe-repositories --repository-names ogc-api-features --region ${{ env.AWS_REGION }} || \
+            aws ecr create-repository --repository-name ogc-api-features --region ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
