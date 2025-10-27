@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  polaris:
+  polaris-catalog:
     image: ${ECR_REGISTRY}/polaris-catalog:latest
     container_name: polaris-catalog
     ports:
@@ -9,48 +9,35 @@ services:
       - "8182:8182"
     environment:
       - AWS_REGION=${AWS_REGION}
-      - S3_BUCKET=${S3_BUCKET}
-      - DYNAMODB_TABLE=${DYNAMODB_TABLE}
-      - JAVA_OPTS=-Xmx1g -Xms512m
+      - AWS_DEFAULT_REGION=${AWS_REGION}
+      # Polaris bootstrap configuration
+      - POLARIS_BOOTSTRAP=true
+      - POLARIS_PERSISTENCE_TYPE=in-memory
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8181/api/catalog/v1/config || curl -f http://localhost:8182/q/health || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 60s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      retries: 10
+      start_period: 120s
 
-  ogc-api:
+  ogc-api-features:
     image: ${ECR_REGISTRY}/ogc-api-features:latest
     container_name: ogc-api-features
     ports:
       - "8080:8080"
     environment:
       - AWS_REGION=${AWS_REGION}
+      - AWS_DEFAULT_REGION=${AWS_REGION}
+      - POLARIS_ENDPOINT=http://polaris-catalog:8181
       - S3_BUCKET=${S3_BUCKET}
-      - DYNAMODB_TABLE=${DYNAMODB_TABLE}
-      - POLARIS_ENDPOINT=http://polaris:8181
     depends_on:
-      polaris:
+      polaris-catalog:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-networks:
-  default:
-    name: geospatial-platform
+      start_period: 60s

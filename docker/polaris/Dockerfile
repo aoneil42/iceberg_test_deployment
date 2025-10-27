@@ -1,15 +1,19 @@
 FROM apache/polaris:1.1.0-incubating
 
-# The official Apache Polaris image supports both amd64 and arm64
-# Environment variables for Polaris configuration
-ENV POLARIS_BOOTSTRAP_REALM=default-realm
-ENV POLARIS_BOOTSTRAP_CLIENT_ID=polaris-admin
-ENV POLARIS_BOOTSTRAP_CLIENT_SECRET=polaris-secret-123
-ENV CATALOG_STORE_TYPE=in-memory
+# Polaris requires bootstrapping on first run
+# The official image needs environment variables set
+ENV POLARIS_BOOTSTRAP=true
+ENV POLARIS_PERSISTENCE_TYPE=in-memory
+
+# For production, you'd use:
+# ENV POLARIS_PERSISTENCE_TYPE=metastore
+# ENV AWS_REGION=us-west-2
 
 # Expose Polaris ports
+# 8181 - Main API
+# 8182 - Management/Health
 EXPOSE 8181 8182
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8182/healthcheck || exit 1
+# Use the correct health check endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
+    CMD curl -f http://localhost:8181/api/catalog/v1/config || exit 1
