@@ -11,11 +11,6 @@ terraform {
       version = "~> 3.5"
     }
   }
-
-  backend "s3" {
-    # Configured via CLI: bucket, key, region
-    encrypt = true
-  }
 }
 
 provider "aws" {
@@ -34,9 +29,6 @@ provider "aws" {
 resource "random_id" "suffix" {
   byte_length = 4
 }
-
-# Data source for current AWS account
-data "aws_caller_identity" "current" {}
 
 # Data source for latest Amazon Linux 2023 ARM64 AMI
 data "aws_ami" "amazon_linux_2023_arm64" {
