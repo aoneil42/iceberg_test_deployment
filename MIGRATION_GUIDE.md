@@ -1,314 +1,487 @@
-# Deployment Migration Guide: DynamoDB → RDS PostgreSQL
+# Geospatial Platform Refactoring Guide
 
-This guide shows all the changes needed to migrate your iceberg_test_deployment from DynamoDB to RDS PostgreSQL.
+## Overview
 
-## Summary of Changes
+This refactoring accomplishes two major goals:
+1. **Switch from DynamoDB to RDS PostgreSQL** for Apache Polaris catalog metadata
+2. **Migrate from GitLab CI/CD to GitHub Actions** with integrated frontend build
 
-### ✅ What's New
-- **RDS PostgreSQL** for Polaris metadata (replaces DynamoDB)
-- **Coordinated start/stop** via GitHub Actions
-- **Official Polaris configuration** per documentation
-- **IAM user** for GitHub Actions automation
-- **Updated documentation** (no more GitLab references)
+## What Changed
 
-### ❌ What's Removed
-- DynamoDB tables (dynamodb.tf)
-- GitLab CI/CD references
-- Manual docker-compose configuration
+### Architecture Changes
 
-### 💰 Cost Impact
-- **Before**: ~$15-20/month (EC2 only, DynamoDB didn't work)
-- **After**: ~$10-40/month depending on usage (EC2 + RDS, fully functional)
+**Before:**
+```
+deck.gl → OGC API (8080) → Polaris (8181) → DynamoDB + S3
+```
 
----
+**After:**
+```
+deck.gl → OGC API (8080) → Polaris (8181) → RDS PostgreSQL + S3
+```
 
-## Step-by-Step Migration
+### Key Benefits
 
-### 1. Backup Current State (If Deployed)
+1. **RDS PostgreSQL:**
+   - ✅ Officially supported by Apache Polaris documentation
+   - ✅ ACID compliance with full transaction support
+   - ✅ Better query performance for catalog operations
+   - ✅ Automated backups and point-in-time recovery
+   - ✅ Similar cost (~$8-10/month for db.t4g.micro)
+
+2. **GitHub Actions:**
+   - ✅ Native GitHub integration
+   - ✅ No external CI/CD service needed
+   - ✅ Built-in secrets management
+   - ✅ Scheduled start/stop for cost savings
+   - ✅ Frontend build automated in pipeline
+
+3. **Frontend CI/CD Integration:**
+   - ✅ Automatic build on every commit
+   - ✅ Deploy to S3 static website
+   - ✅ No manual frontend deployment needed
+
+## Files Changed
+
+### New Files
+
+```
+.github/
+├── workflows/
+│   ├── deploy.yml           # Main deployment pipeline
+│   └── start-stop.yml       # Scheduled EC2 start/stop
+
+frontend/
+├── package.json             # Build configuration
+└── vite.config.js          # Vite bundler config
+
+terraform/
+└── s3_frontend.tf          # S3 bucket for frontend hosting
+```
+
+### Modified Files
+
+```
+terraform/
+├── ec2.tf                  # Updated to use RDS variables
+├── user_data.sh            # PostgreSQL configuration
+└── variables.tf            # Added db_master_password
+
+docker/
+└── polaris/
+    ├── Dockerfile          # Added PostgreSQL client
+    └── entrypoint.sh       # Wait for RDS and configure
+```
+
+### Removed Files
+
+```
+.gitlab-ci.yml              # Replaced by GitHub Actions
+terraform/dynamodb.tf       # Replaced by rds.tf (existing)
+```
+
+## Migration Steps
+
+### Step 1: Prepare Your Repository
 
 ```bash
-cd terraform
-terraform show > backup-terraform-state.txt
+# Clone your repository
+git clone https://github.com/aoneil42/iceberg_test_deployment.git
+cd iceberg_test_deployment
+
+# Create a new branch for the refactoring
+git checkout -b refactor/rds-and-github-actions
 ```
 
-### 2. Delete Old Files
+### Step 2: Copy Updated Files
+
+Copy all files from this refactoring package to your repository:
 
 ```bash
-# Remove DynamoDB configuration
-rm terraform/dynamodb.tf
+# Copy GitHub Actions workflows
+cp -r refactor/.github .
 
-# Remove old security groups (if exists)
-rm terraform/sg.tf  # Only if you have duplicate with security_groups.tf
+# Copy updated Terraform files
+cp refactor/terraform/ec2.tf terraform/
+cp refactor/terraform/user_data.sh terraform/
+cp refactor/terraform/variables.tf terraform/
+cp refactor/terraform/s3_frontend.tf terraform/
+
+# Copy updated Docker files
+cp refactor/docker/polaris/Dockerfile docker/polaris/
+cp refactor/docker/polaris/entrypoint.sh docker/polaris/
+
+# Copy frontend build configuration
+cp refactor/frontend/package.json frontend/
+cp refactor/frontend/vite.config.js frontend/
+
+# Remove GitLab CI (keep as backup if needed)
+git mv .gitlab-ci.yml .gitlab-ci.yml.backup
+
+# Remove DynamoDB Terraform (if exists)
+git rm terraform/dynamodb.tf || true
 ```
 
-### 3. Create New Terraform Files
+### Step 3: Update Your Existing Files
 
-**File: `terraform/rds.tf`**
-```hcl
-[Contents from /tmp/terraform_rds.tf]
-```
+#### A. Update `terraform/rds.tf`
 
-**File: `terraform/variables.tf` (REPLACE existing)**
-```hcl
-[Contents from /tmp/terraform_variables.tf]
-```
-
-**File: `terraform/iam.tf` (REPLACE existing)**
-```hcl
-[Contents from /tmp/terraform_iam.tf]
-```
-
-**File: `terraform/outputs.tf` (REPLACE existing)**
-```hcl
-[Contents from /tmp/terraform_outputs.tf]
-```
-
-### 4. Update EC2 User Data
-
-**File: `terraform/ec2.tf`**
-
-Update the user_data section to use the new template:
+You already have this file, but ensure it looks like this:
 
 ```hcl
-resource "aws_instance" "geospatial_platform" {
-  # ... existing configuration ...
-  
-  user_data = templatefile("${path.module}/user_data.sh", {
-    aws_region           = var.aws_region
-    rds_instance_id      = aws_db_instance.polaris.identifier
-    db_name              = aws_db_instance.polaris.db_name
-    db_username          = var.db_master_username
-    db_password          = var.db_master_password
-    polaris_image        = "${aws_ecr_repository.polaris.repository_url}:latest"
-    ogc_api_image        = "${aws_ecr_repository.ogc_api.repository_url}:latest"
-    s3_warehouse_bucket  = aws_s3_bucket.warehouse.id
-    ecr_registry         = split("/", aws_ecr_repository.polaris.repository_url)[0]
-    docker_compose_content = file("${path.module}/../docker/docker-compose.yml")
-  })
-  
-  # ... rest of configuration ...
+resource "aws_db_instance" "polaris" {
+  identifier        = "${var.project_name}-polaris-db"
+  engine            = "postgres"
+  engine_version    = "16.1"
+  instance_class    = var.db_instance_class
+  allocated_storage = var.db_allocated_storage
+
+  db_name  = "polaris"
+  username = "polaris"
+  password = var.db_master_password
+
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  db_subnet_group_name   = aws_db_subnet_group.polaris.name
+
+  backup_retention_period = var.db_backup_retention_period
+  backup_window          = "03:00-04:00"
+  maintenance_window     = "mon:04:00-mon:05:00"
+
+  multi_az               = var.db_multi_az
+  storage_encrypted      = true
+  skip_final_snapshot    = true
+
+  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "${var.project_name}-polaris-db"
+      Environment = var.environment
+    }
+  )
 }
 ```
 
-**File: `terraform/user_data.sh` (CREATE)**
-```bash
-[Contents from /tmp/user_data.sh]
+#### B. Update `terraform/security_groups.tf`
+
+Add RDS security group:
+
+```hcl
+resource "aws_security_group" "rds" {
+  name_prefix = "${var.project_name}-rds-"
+  description = "Security group for Polaris RDS PostgreSQL"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.geospatial.id]
+    description     = "PostgreSQL from EC2"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "All outbound traffic"
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "${var.project_name}-rds-sg"
+      Environment = var.environment
+    }
+  )
+}
 ```
 
-### 5. Update Docker Configuration
+#### C. Update `terraform/outputs.tf`
 
-**File: `docker/docker-compose.yml` (REPLACE existing)**
-```yaml
-[Contents from /tmp/docker-compose.yml]
+Add RDS outputs:
+
+```hcl
+output "rds_endpoint" {
+  description = "RDS PostgreSQL endpoint"
+  value       = aws_db_instance.polaris.endpoint
+}
+
+output "frontend_url" {
+  description = "Frontend S3 website URL"
+  value       = "http://${aws_s3_bucket.frontend.bucket}.s3-website-${var.aws_region}.amazonaws.com"
+}
 ```
 
-### 6. Create GitHub Actions Workflows
-
-**File: `.github/workflows/start-infrastructure.yml` (CREATE)**
-```yaml
-[Contents from /tmp/start-infrastructure.yml]
-```
-
-**File: `.github/workflows/stop-infrastructure.yml` (CREATE)**
-```yaml
-[Contents from /tmp/stop-infrastructure.yml]
-```
-
-**File: `.github/workflows/deploy.yml` (REPLACE existing if exists)**
-```yaml
-[Contents from /tmp/deploy.yml]
-```
-
-### 7. Update README
-
-**File: `README.md` (REPLACE existing)**
-```markdown
-[Contents from /tmp/README.md]
-```
-
-### 8. Configure GitHub Secrets
+### Step 4: Set Up GitHub Secrets
 
 Go to your GitHub repository → Settings → Secrets and variables → Actions
 
-Add these secrets:
+Add the following secrets:
+
 ```
-AWS_ACCESS_KEY_ID=<from Terraform output after first deploy>
-AWS_SECRET_ACCESS_KEY=<from Terraform output after first deploy>
-DB_MASTER_PASSWORD=<create a secure password>
+AWS_ACCESS_KEY_ID          # Your AWS access key
+AWS_SECRET_ACCESS_KEY      # Your AWS secret key
+AWS_ACCOUNT_ID             # Your AWS account ID
+TERRAFORM_STATE_BUCKET     # S3 bucket for Terraform state
+DB_MASTER_PASSWORD         # PostgreSQL master password (min 8 chars)
+POLARIS_CLIENT_SECRET      # Polaris OAuth secret (generate random string)
 ```
 
-**Generate a secure password:**
+Generate secrets:
+
 ```bash
+# Generate Polaris client secret
 openssl rand -base64 32
+
+# Generate DB password
+openssl rand -base64 24
 ```
 
-### 9. Initial Deployment
+### Step 5: Create Terraform State Bucket (if not exists)
 
 ```bash
-# 1. Initialize Terraform with new configuration
-cd terraform
-terraform init -reconfigure
+# Set your AWS profile or credentials
+export AWS_PROFILE=your-profile
 
-# 2. Plan the deployment (set DB password)
-export TF_VAR_db_master_password="your-secure-password"
-terraform plan
+# Create S3 bucket for Terraform state
+aws s3 mb s3://your-terraform-state-bucket --region us-west-2
 
-# 3. Apply the changes
-terraform apply
+# Enable versioning
+aws s3api put-bucket-versioning \
+  --bucket your-terraform-state-bucket \
+  --versioning-configuration Status=Enabled
 
-# 4. Get outputs including GitHub Actions credentials
-terraform output -json > outputs.json
-
-# 5. Extract GitHub Actions credentials
-cat outputs.json | jq -r '.github_actions_access_key_id.value'
-cat outputs.json | jq -r '.github_actions_secret_access_key.value'
-
-# 6. Add these to GitHub Secrets (see step 8)
-```
-
-### 10. Verify Deployment
-
-```bash
-# Get EC2 public IP
-EC2_IP=$(terraform output -raw ec2_public_ip)
-
-# Wait 5 minutes for services to start, then test:
-curl http://$EC2_IP:8182/q/health
-
-# Should return: {"status":"UP","checks":[...]}
-```
-
-### 11. Get Polaris Root Credentials
-
-```bash
-# SSH to EC2
-aws ssm start-session --target <instance-id>
-
-# View Polaris logs to get root credentials
-docker logs polaris-catalog 2>&1 | grep "root principal credentials"
-
-# Save these credentials - you'll need them to create catalogs!
-```
-
----
-
-## Testing the New Setup
-
-### Start/Stop Workflow Test
-
-1. **Stop infrastructure:**
-   - Go to Actions → Stop Infrastructure → Run workflow
-   - Wait ~2 minutes
-   - Verify both EC2 and RDS are stopped in AWS Console
-
-2. **Start infrastructure:**
-   - Go to Actions → Start Infrastructure → Run workflow  
-   - Wait ~10 minutes (RDS takes time to start)
-   - Test endpoints work
-
-### Create a Test Catalog
-
-```bash
-# Use the root credentials from step 11
-CLIENT_ID="<from-polaris-logs>"
-CLIENT_SECRET="<from-polaris-logs>"
-
-# Create a catalog
-curl -X POST "http://$EC2_IP:8181/api/v1/catalogs" \
-  -u "$CLIENT_ID:$CLIENT_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "test_catalog",
-    "type": "INTERNAL",
-    "properties": {
-      "default-base-location": "s3://your-warehouse-bucket/test/"
-    },
-    "storageConfigInfo": {
-      "storageType": "S3",
-      "allowedLocations": ["s3://your-warehouse-bucket/"]
-    }
+# Enable encryption
+aws s3api put-bucket-encryption \
+  --bucket your-terraform-state-bucket \
+  --server-side-encryption-configuration '{
+    "Rules": [{
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+      }
+    }]
   }'
 ```
 
----
+### Step 6: Install Frontend Dependencies
 
-## Rollback Plan (If Needed)
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### Step 7: Commit and Push
+
+```bash
+git add .
+git commit -m "Refactor: Switch to RDS PostgreSQL and GitHub Actions
+
+- Replace DynamoDB with RDS PostgreSQL for Polaris metadata
+- Migrate from GitLab CI to GitHub Actions
+- Integrate frontend build into CI/CD pipeline
+- Add automated EC2 start/stop workflows
+"
+
+git push origin refactor/rds-and-github-actions
+```
+
+### Step 8: Deploy
+
+1. **Create Pull Request:**
+   - Go to GitHub and create a PR from your branch
+   - Review the changes
+   - Merge to main
+
+2. **First Deployment:**
+   - GitHub Actions will automatically trigger
+   - Watch the workflow: Actions → Deploy Geospatial Platform
+   - This will:
+     - Validate Terraform
+     - Build frontend
+     - Build and push Docker images to ECR
+     - Deploy infrastructure (including RDS)
+     - Deploy application
+
+3. **Monitor Deployment:**
+   - Check the Actions tab for progress
+   - Deployment takes ~10-15 minutes (RDS creation is slowest)
+
+### Step 9: Verify Deployment
+
+After deployment completes:
+
+```bash
+# Get the EC2 IP from GitHub Actions output or:
+cd terraform
+terraform output ec2_public_ip
+
+# Test endpoints
+curl http://<EC2_IP>:8181/v1/config        # Polaris
+curl http://<EC2_IP>:8080/                 # OGC API
+
+# Check frontend
+# URL will be in GitHub Actions output
+```
+
+## Cost Comparison
+
+### Before (DynamoDB)
+
+| Service | Monthly Cost |
+|---------|-------------|
+| EC2 t4g.medium (8h/day) | $8 |
+| DynamoDB | $1 |
+| S3 (100GB) | $2.30 |
+| Other | $4 |
+| **Total** | **~$15.30** |
+
+### After (RDS PostgreSQL)
+
+| Service | Monthly Cost |
+|---------|-------------|
+| EC2 t4g.medium (8h/day) | $8 |
+| RDS db.t4g.micro (8h/day) | $3 |
+| S3 (100GB + frontend) | $2.50 |
+| Other | $4 |
+| **Total** | **~$17.50** |
+
+**Additional cost: $2.20/month** for significant benefits of PostgreSQL.
+
+## Using Start/Stop Workflows
+
+Save money by stopping EC2 when not in use:
+
+### Automatic (Scheduled)
+
+The workflow is configured to:
+- **Start:** 8 AM EST, Monday-Friday
+- **Stop:** 6 PM EST, Monday-Friday
+
+Edit `.github/workflows/start-stop.yml` to change schedule.
+
+### Manual Control
+
+```bash
+# Via GitHub UI:
+# Actions → Start/Stop EC2 Instance → Run workflow
+# Select: start, stop, or status
+
+# Via GitHub CLI:
+gh workflow run start-stop.yml -f action=start
+gh workflow run start-stop.yml -f action=stop
+gh workflow run start-stop.yml -f action=status
+```
+
+## Troubleshooting
+
+### 1. RDS Connection Timeout
+
+```bash
+# Check security group rules
+aws ec2 describe-security-groups --group-ids <rds-sg-id>
+
+# Verify RDS is running
+aws rds describe-db-instances --db-instance-identifier geospatial-platform-polaris-db
+```
+
+### 2. Polaris Won't Start
+
+```bash
+# SSH to EC2
+ssh ec2-user@<EC2_IP>
+
+# Check logs
+cd ~/deployment
+docker-compose logs polaris
+
+# Check PostgreSQL connectivity
+PGPASSWORD='your-password' psql -h <rds-endpoint> -U polaris -d polaris
+```
+
+### 3. Frontend Build Fails
+
+```bash
+# Check Node.js version (need 18+)
+node --version
+
+# Clean install
+cd frontend
+rm -rf node_modules package-lock.json
+npm install
+npm run build
+```
+
+### 4. GitHub Actions Fails
+
+- Check secrets are set correctly
+- Verify AWS credentials have necessary permissions
+- Review CloudWatch logs for EC2 instance
+- Check Terraform state bucket exists
+
+## Rollback Plan
 
 If something goes wrong:
 
 ```bash
-# 1. Destroy new infrastructure
+# 1. Revert to previous commit
+git revert HEAD
+
+# 2. Or restore from backup
+git checkout main
+git reset --hard <previous-commit-sha>
+git push origin main --force
+
+# 3. Destroy new infrastructure
 cd terraform
-terraform destroy
+terraform destroy -auto-approve
 
-# 2. Restore from backup
-git checkout <previous-commit>
-
-# 3. Restore old Terraform state if needed
-# (You saved this in step 1)
+# 4. Restore GitLab CI
+git mv .gitlab-ci.yml.backup .gitlab-ci.yml
+git commit -m "Rollback to GitLab CI"
+git push origin main
 ```
-
----
-
-## Key Differences: Old vs New
-
-| Aspect | Old (DynamoDB) | New (RDS) |
-|--------|----------------|-----------|
-| **Metadata Store** | DynamoDB | PostgreSQL RDS |
-| **Polaris Config** | Custom/broken | Official documentation |
-| **Start/Stop** | Manual EC2 only | Automated EC2 + RDS |
-| **Cost (5 days)** | N/A (didn't work) | ~$10/month |
-| **CI/CD** | GitLab | GitHub Actions |
-| **Bootstrap** | None | Automatic on first start |
-
----
-
-## Common Issues & Solutions
-
-### Issue: Terraform can't create RDS subnet group
-**Solution:** You need at least 2 subnets in different AZs. The new `rds.tf` creates this automatically.
-
-### Issue: Polaris returns 404
-**Solution:** Check that RDS is running and accessible from EC2. Review security group rules.
-
-### Issue: GitHub Actions can't start RDS
-**Solution:** Verify AWS credentials in GitHub Secrets have RDS permissions.
-
-### Issue: Docker containers can't connect to RDS
-**Solution:** Check that security group allows traffic from EC2 security group to RDS on port 5432.
-
----
-
-## Post-Migration Checklist
-
-- [ ] All Terraform files updated
-- [ ] GitHub Secrets configured
-- [ ] Infrastructure deployed successfully
-- [ ] Polaris responding to health checks
-- [ ] Root credentials saved securely
-- [ ] Test catalog created successfully
-- [ ] Start/Stop workflows tested
-- [ ] Documentation updated
-- [ ] Old DynamoDB resources cleaned up
-
----
 
 ## Next Steps
 
-1. **Load some test data** using the ETL scripts
-2. **Test OGC API Features** endpoint
-3. **Configure deck.gl frontend** with your EC2 IP
-4. **Set up monitoring** (CloudWatch alarms)
-5. **Implement authentication** for production use
+After successful migration:
 
----
+1. **Update Documentation:**
+   - Update README with new architecture
+   - Document new deployment process
+   - Add RDS backup/restore procedures
+
+2. **Security Hardening:**
+   - Restrict security group CIDR blocks
+   - Enable RDS encryption at rest (already done)
+   - Set up CloudWatch alarms
+
+3. **Monitoring:**
+   - Create CloudWatch dashboard
+   - Set up RDS performance insights
+   - Monitor PostgreSQL slow query log
+
+4. **Optimization:**
+   - Tune PostgreSQL parameters
+   - Consider RDS Multi-AZ for production
+   - Set up automated RDS snapshots
 
 ## Support
 
 If you encounter issues:
-1. Check CloudWatch Logs: `/aws/ec2/iceberg-test`
-2. Review Polaris logs: `docker logs polaris-catalog`
-3. Check RDS connectivity: `nc -zv <RDS_ENDPOINT> 5432`
-4. Open a GitHub issue with logs and error messages
 
-Good luck with your migration! 🚀
+1. Check GitHub Actions logs
+2. Review CloudWatch Logs
+3. Verify all secrets are set
+4. Ensure Terraform state bucket exists
+5. Check AWS service quotas
+
+## References
+
+- [Apache Polaris Documentation](https://polaris.apache.org/)
+- [GitHub Actions Documentation](https://docs.github.com/en/actions)
+- [AWS RDS PostgreSQL](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_PostgreSQL.html)
+- [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
