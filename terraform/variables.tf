@@ -76,3 +76,16 @@ variable "volume_size" {
   type        = number
   default     = 30
 }
+
+variable "client_secret" {
+  description = "Polaris client secret"
+  type        = string
+  sensitive   = true
+  default     = ""  # Will be generated if not provided
+}
+
+variable "polaris_realm" {
+  description = "Polaris realm name"
+  type        = string
+  default     = "default-realm"
+}
