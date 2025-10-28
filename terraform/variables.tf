@@ -1,13 +1,19 @@
-variable "project_name" {
-  description = "Name of the project"
-  type        = string
-  default     = "iceberg-test"
-}
-
 variable "aws_region" {
   description = "AWS region"
   type        = string
   default     = "us-west-2"
+}
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+  default     = "production"
+}
+
+variable "project_name" {
+  description = "Project name for resource naming"
+  type        = string
+  default     = "geospatial-platform"
 }
 
 variable "instance_type" {
@@ -17,75 +23,71 @@ variable "instance_type" {
 }
 
 variable "key_name" {
-  description = "Name of the SSH key pair (optional - will use Session Manager if not provided)"
+  description = "SSH key pair name (optional)"
   type        = string
   default     = ""
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR block allowed to SSH to EC2 (leave empty to disable SSH)"
-  type        = string
-  default     = "0.0.0.0/0"
+  description = "CIDR block allowed to SSH to EC2 instance"
+  type        = list(string)
+  default     = ["0.0.0.0/0"] # Change this to your IP!
 }
 
 variable "allowed_api_cidr" {
-  description = "CIDR blocks allowed to access API endpoints (comma-separated)"
-  type        = string
-  default     = "0.0.0.0/0"
+  description = "CIDR block allowed to access API endpoints"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
-variable "s3_bucket_prefix" {
-  description = "Prefix for S3 bucket name (will be suffixed with random ID)"
-  type        = string
-  default     = "iceberg-test-warehouse"
-}
-
-variable "db_master_username" {
-  description = "Master username for RDS PostgreSQL"
-  type        = string
-  default     = "polaris_admin"
-  sensitive   = true
-}
-
+# PostgreSQL/RDS Configuration
 variable "db_master_password" {
-  description = "Master password for RDS PostgreSQL (use GitHub Actions secret)"
+  description = "Master password for RDS PostgreSQL"
   type        = string
   sensitive   = true
 }
 
-variable "enable_cloudwatch_logs" {
-  description = "Enable CloudWatch logs for EC2 and containers"
+variable "db_instance_class" {
+  description = "RDS instance class"
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_storage" {
+  description = "Allocated storage for RDS in GB"
+  type        = number
+  default     = 20
+}
+
+variable "db_backup_retention_period" {
+  description = "Number of days to retain automated backups"
+  type        = number
+  default     = 7
+}
+
+variable "db_multi_az" {
+  description = "Enable Multi-AZ deployment for RDS"
+  type        = bool
+  default     = false
+}
+
+# Polaris Configuration
+variable "polaris_client_secret" {
+  description = "Polaris OAuth client secret"
+  type        = string
+  sensitive   = true
+}
+
+# S3 Configuration
+variable "s3_versioning_enabled" {
+  description = "Enable S3 versioning for warehouse bucket"
   type        = bool
   default     = true
 }
 
+# Tags
 variable "tags" {
-  description = "Additional tags to apply to all resources"
+  description = "Additional tags for all resources"
   type        = map(string)
   default     = {}
-}
-
-variable "environment" {
-  description = "Environment name (dev, staging, prod)"
-  type        = string
-  default     = "dev"
-}
-
-variable "volume_size" {
-  description = "Size of root volume in GB"
-  type        = number
-  default     = 30
-}
-
-variable "client_secret" {
-  description = "Polaris client secret"
-  type        = string
-  sensitive   = true
-  default     = ""  # Will be generated if not provided
-}
-
-variable "polaris_realm" {
-  description = "Polaris realm name"
-  type        = string
-  default     = "default-realm"
 }
