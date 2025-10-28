@@ -1,6 +1,8 @@
 resource "aws_s3_bucket" "data_warehouse" {
   bucket = local.bucket_name
 
+  force_destroy = true  # Add this line
+
   tags = merge(
     local.common_tags,
     {
