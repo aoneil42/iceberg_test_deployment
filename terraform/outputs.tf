@@ -20,7 +20,7 @@ output "ogc_api_endpoint" {
 
 output "s3_warehouse_bucket" {
   description = "S3 bucket for Iceberg warehouse"
-  value       = aws_s3_bucket.warehouse.id
+  value       = aws_s3_bucket.data_warehouse.id
 }
 
 output "rds_endpoint" {
@@ -60,6 +60,7 @@ output "github_actions_secret_access_key" {
 
 output "deployment_commands" {
   description = "Commands to deploy the application"
+  sensitive   = true
   value = <<-EOT
     # Connect to EC2 via Session Manager (no SSH key needed):
     aws ssm start-session --target ${aws_instance.geospatial_platform.id}

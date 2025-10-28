@@ -41,8 +41,8 @@ resource "aws_iam_role_policy" "s3_access" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.warehouse.arn,
-          "${aws_s3_bucket.warehouse.arn}/*"
+          aws_s3_bucket.data_warehouse.arn,
+          "${aws_s3_bucket.data_warehouse.arn}/*"
         ]
       }
     ]

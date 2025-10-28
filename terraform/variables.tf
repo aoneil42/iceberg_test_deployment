@@ -64,3 +64,15 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "environment" {
+  description = "Environment name (dev, staging, prod)"
+  type        = string
+  default     = "dev"
+}
+
+variable "volume_size" {
+  description = "Size of root volume in GB"
+  type        = number
+  default     = 30
+}

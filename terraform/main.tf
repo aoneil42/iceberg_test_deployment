@@ -65,10 +65,14 @@ data "aws_subnets" "default" {
 
 # Local variables
 locals {
-  bucket_name    = "${var.project_name}-${random_id.suffix.hex}"
-  dynamodb_table = "${var.project_name}-catalog-${random_id.suffix.hex}"
-  common_tags = {
-    Project     = var.project_name
-    Environment = var.environment
-  }
+  bucket_name = "${var.s3_bucket_prefix}-${random_id.suffix.hex}"
+
+  common_tags = merge(
+    {
+      Project     = var.project_name
+      Environment = var.environment
+      ManagedBy   = "Terraform"
+    },
+    var.tags
+  )
 }
