@@ -25,7 +25,7 @@ variable "key_name" {
 variable "allowed_ssh_cidr" {
   description = "CIDR block allowed to SSH to EC2 (leave empty to disable SSH)"
   type        = string
-  default     = ""
+  default     = "0.0.0.0/0"
 }
 
 variable "allowed_api_cidr" {
