@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  polaris-catalog:
+    image: ${POLARIS_IMAGE}
+    container_name: polaris-catalog
+    restart: unless-stopped
+    ports:
+      - "8181:8181"
+      - "8182:8182"
+    environment:
+      # PostgreSQL persistence configuration
+      - POLARIS_PERSISTENCE_TYPE=relational-jdbc
+      - QUARKUS_DATASOURCE_DB_KIND=postgresql
+      - QUARKUS_DATASOURCE_USERNAME=${DB_USERNAME}
+      - QUARKUS_DATASOURCE_PASSWORD=${DB_PASSWORD}
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://${DB_ENDPOINT}/${DB_NAME}
+      
+      # AWS credentials for S3 access
+      - AWS_REGION=${AWS_REGION}
+      - AWS_DEFAULT_REGION=${AWS_REGION}
+      
+      # Logging configuration
+      - QUARKUS_LOG_LEVEL=INFO
+      - QUARKUS_LOG_CONSOLE_LEVEL=INFO
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8182/q/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - geospatial
+
+  ogc-api-features:
+    image: ${OGC_API_IMAGE}
+    container_name: ogc-api-features
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Polaris connection
+      - POLARIS_ENDPOINT=http://polaris-catalog:8181
+      - POLARIS_CATALOG_NAME=default
+      
+      # AWS configuration
+      - AWS_REGION=${AWS_REGION}
+      - AWS_DEFAULT_REGION=${AWS_REGION}
+      
+      # S3 warehouse configuration
+      - S3_WAREHOUSE_BUCKET=${S3_WAREHOUSE_BUCKET}
+      
+      # Logging
+      - LOG_LEVEL=info
+      
+    depends_on:
+      polaris-catalog:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - geospatial
+
+networks:
+  geospatial:
+    driver: bridge

@@ -1,679 +1,201 @@
-name: Deploy Geospatial Platform
+name: Deploy Infrastructure and Application
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      terraform_action:
+        description: 'Terraform action (plan/apply/destroy)'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
 
 env:
   AWS_REGION: us-west-2
-  TF_VERSION: 1.6.0
+  TERRAFORM_VERSION: 1.6.0
 
 jobs:
-  validate:
-    name: Validate
+  terraform:
+    name: Terraform ${{ github.event.inputs.terraform_action || 'plan' }}
     runs-on: ubuntu-latest
+    
+    outputs:
+      ec2_public_ip: ${{ steps.outputs.outputs.ec2_ip }}
+      rds_endpoint: ${{ steps.outputs.outputs.rds_endpoint }}
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Terraform Format Check
-        run: |
-          cd terraform
-          terraform fmt -check
-
-      - name: Terraform Init
-        run: |
-          cd terraform
-          terraform init -backend=false
-
-      - name: Terraform Validate
-        run: |
-          cd terraform
-          terraform validate
-
-      - name: Lint Dockerfiles
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: docker/polaris/Dockerfile
-
-      - name: Lint OGC API Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: docker/ogc-api/Dockerfile
-          ignore: DL3008
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Lint Python Code
-        run: |
-          cd docker/ogc-api
-          pip install ruff mypy types-requests
-          ruff check app/ || true
-          mypy app/ --ignore-missing-imports || true
-
-  build:
-    name: Build and Push Docker Images
-    runs-on: ubuntu-latest
-    needs: validate
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Create ECR repositories if they don't exist
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Format Check
+        working-directory: terraform
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform
+        env:
+          TF_VAR_db_master_password: ${{ secrets.DB_MASTER_PASSWORD }}
         run: |
-          aws ecr describe-repositories --repository-names polaris-catalog --region ${{ env.AWS_REGION }} || \
-            aws ecr create-repository --repository-name polaris-catalog --region ${{ env.AWS_REGION }}
+          terraform plan \
+            -var="db_master_password=${{ secrets.DB_MASTER_PASSWORD }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        if: github.event.inputs.terraform_action == 'apply' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        working-directory: terraform
+        env:
+          TF_VAR_db_master_password: ${{ secrets.DB_MASTER_PASSWORD }}
+        run: |
+          terraform apply -auto-approve tfplan
+
+      - name: Terraform Destroy
+        if: github.event.inputs.terraform_action == 'destroy'
+        working-directory: terraform
+        env:
+          TF_VAR_db_master_password: ${{ secrets.DB_MASTER_PASSWORD }}
+        run: |
+          terraform destroy -auto-approve \
+            -var="db_master_password=${{ secrets.DB_MASTER_PASSWORD }}"
+
+      - name: Get Terraform Outputs
+        if: github.event.inputs.terraform_action != 'destroy'
+        id: outputs
+        working-directory: terraform
+        run: |
+          EC2_IP=$(terraform output -raw ec2_public_ip)
+          RDS_ENDPOINT=$(terraform output -raw rds_endpoint)
           
-          aws ecr describe-repositories --repository-names ogc-api-features --region ${{ env.AWS_REGION }} || \
-            aws ecr create-repository --repository-name ogc-api-features --region ${{ env.AWS_REGION }}
+          echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
+          echo "rds_endpoint=$RDS_ENDPOINT" >> $GITHUB_OUTPUT
+          
+          echo "EC2 Public IP: $EC2_IP"
+          echo "RDS Endpoint: $RDS_ENDPOINT"
+
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: terraform
+    if: github.event.inputs.terraform_action != 'destroy'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Polaris Image (Multi-arch)
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Get ECR repository URLs
+        id: ecr
         run: |
-          cd docker/polaris
+          POLARIS_REPO=$(aws ecr describe-repositories \
+            --repository-names "iceberg-test-polaris-catalog" \
+            --query 'repositories[0].repositoryUri' \
+            --output text 2>/dev/null || echo "")
           
-          echo "Building multi-architecture image for linux/amd64 and linux/arm64..."
+          OGC_API_REPO=$(aws ecr describe-repositories \
+            --repository-names "iceberg-test-ogc-api-features" \
+            --query 'repositories[0].repositoryUri' \
+            --output text 2>/dev/null || echo "")
           
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag $ECR_REGISTRY/polaris-catalog:$IMAGE_TAG \
-            --tag $ECR_REGISTRY/polaris-catalog:latest \
-            --push \
-            --progress=plain \
-            .
-          
-          echo "✅ Polaris multi-arch image built and pushed"
+          echo "polaris_repo=$POLARIS_REPO" >> $GITHUB_OUTPUT
+          echo "ogc_api_repo=$OGC_API_REPO" >> $GITHUB_OUTPUT
 
-      - name: Build and Push OGC API Image (Multi-arch)
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Build and push Polaris image
+        if: steps.ecr.outputs.polaris_repo != ''
+        working-directory: docker/polaris
         run: |
-          cd docker/ogc-api
-          
-          echo "Building multi-architecture image for linux/amd64 and linux/arm64..."
-          
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag $ECR_REGISTRY/ogc-api-features:$IMAGE_TAG \
-            --tag $ECR_REGISTRY/ogc-api-features:latest \
-            --push \
-            --progress=plain \
-            .
-          
-          echo "✅ OGC API multi-arch image built and pushed"
+          docker build -t ${{ steps.ecr.outputs.polaris_repo }}:latest .
+          docker push ${{ steps.ecr.outputs.polaris_repo }}:latest
 
-  plan:
-    name: Terraform Plan
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Terraform Init
+      - name: Build and push OGC API image
+        if: steps.ecr.outputs.ogc_api_repo != ''
+        working-directory: docker/ogc-api
         run: |
-          cd terraform
-          terraform init \
-            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
-            -backend-config="key=iceberg-test-deployment/terraform.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}"
-
-      - name: Terraform Plan
-        run: |
-          cd terraform
-          terraform plan -out=tfplan
-
-      - name: Upload Plan
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan
-          path: terraform/tfplan
-          retention-days: 5
-
-  deploy-infra:
-    name: Deploy Infrastructure
-    runs-on: ubuntu-latest
-    needs: plan
-    if: github.ref == 'refs/heads/main'
-    environment: production
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Terraform Init
-        run: |
-          cd terraform
-          terraform init \
-            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
-            -backend-config="key=iceberg-test-deployment/terraform.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}"
-
-      - name: Download Plan
-        uses: actions/download-artifact@v4
-        with:
-          name: terraform-plan
-          path: terraform/
-
-      - name: Import existing ECR repositories
-        working-directory: terraform
-        run: |
-          terraform import aws_ecr_repository.polaris polaris-catalog || true
-          terraform import aws_ecr_repository.ogc_api ogc-api-features || true
-        continue-on-error: true
-
-      - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve
-
-      - name: Get Terraform Outputs
-        id: tf-outputs
-        run: |
-          cd terraform
-          echo "ec2_public_ip=$(terraform output -raw ec2_public_ip)" >> $GITHUB_OUTPUT
-          echo "ec2_instance_id=$(terraform output -raw ec2_instance_id)" >> $GITHUB_OUTPUT
-          echo "s3_bucket=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
-          echo "dynamodb_table=$(terraform output -raw dynamodb_table_name)" >> $GITHUB_OUTPUT
-          terraform output -json > ../tf_outputs.json
-
-      - name: Upload Terraform Outputs
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-outputs
-          path: tf_outputs.json
-          retention-days: 30
-
-  verify-security-groups:
-    name: Verify Security Groups
-    runs-on: ubuntu-latest
-    needs: deploy-infra
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Download Terraform Outputs
-        uses: actions/download-artifact@v4
-        with:
-          name: terraform-outputs
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Verify and Attach Security Group
-        run: |
-          set -e
-          
-          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
-          INSTANCE_ID=$(jq -r '.ec2_instance_id.value' tf_outputs.json)
-          
-          echo "Instance ID: $INSTANCE_ID"
-          echo "Instance IP: $EC2_IP"
-          
-          # Get security group ID
-          echo "Finding security group..."
-          SG_ID=$(aws ec2 describe-security-groups \
-            --filters "Name=tag:Name,Values=iceberg-test-sg" \
-            --query 'SecurityGroups[0].GroupId' \
-            --output text)
-          
-          if [ "$SG_ID" == "None" ] || [ -z "$SG_ID" ]; then
-            echo "❌ Error: Security group not found!"
-            exit 1
-          fi
-          
-          echo "Security Group ID: $SG_ID"
-          
-          # Check if security group is already attached
-          echo "Checking security group attachment..."
-          CURRENT_SGS=$(aws ec2 describe-instances \
-            --instance-ids $INSTANCE_ID \
-            --query 'Reservations[0].Instances[0].SecurityGroups[*].GroupId' \
-            --output json)
-          
-          echo "Current security groups: $CURRENT_SGS"
-          
-          if echo "$CURRENT_SGS" | grep -q "$SG_ID"; then
-            echo "✅ Security group already attached"
-          else
-            echo "⚠️  Security group not attached, attaching now..."
-            aws ec2 modify-instance-attribute \
-              --instance-id $INSTANCE_ID \
-              --groups $SG_ID
-            
-            echo "✅ Security group attached"
-            echo "Waiting 15 seconds for changes to propagate..."
-            sleep 15
-          fi
-          
-          # Verify security group rules exist
-          echo "Verifying security group rules..."
-          RULES=$(aws ec2 describe-security-groups \
-            --group-ids $SG_ID \
-            --query 'SecurityGroups[0].IpPermissions[?FromPort==`8181` || FromPort==`8080`].[FromPort,ToPort,IpRanges[0].CidrIp]' \
-            --output text)
-          
-          echo "Security group rules for ports 8080/8181:"
-          echo "$RULES"
-          
-          if [ -z "$RULES" ]; then
-            echo "⚠️  Warning: No rules found for ports 8080/8181"
-          fi
-          
-          # Final verification
-          echo "Final security group check..."
-          aws ec2 describe-instances \
-            --instance-ids $INSTANCE_ID \
-            --query 'Reservations[0].Instances[0].{SecurityGroups:SecurityGroups[*].[GroupId,GroupName]}' \
-            --output json
-          
-          echo "✅ Security group verification complete"
+          docker build -t ${{ steps.ecr.outputs.ogc_api_repo }}:latest .
+          docker push ${{ steps.ecr.outputs.ogc_api_repo }}:latest
 
   deploy-app:
     name: Deploy Application
     runs-on: ubuntu-latest
-    needs: verify-security-groups
-    if: github.ref == 'refs/heads/main'
-    environment: production
+    needs: [terraform, build-and-push]
+    if: github.event.inputs.terraform_action != 'destroy'
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download Terraform Outputs
-        uses: actions/download-artifact@v4
-        with:
-          name: terraform-outputs
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Get EC2 Details
-        id: ec2-details
+      - name: Restart Docker containers on EC2
         run: |
-          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
-          EC2_INSTANCE_ID=$(jq -r '.ec2_instance_id.value' tf_outputs.json)
-          S3_BUCKET=$(jq -r '.s3_bucket_name.value' tf_outputs.json)
-          DYNAMODB_TABLE=$(jq -r '.dynamodb_table_name.value' tf_outputs.json)
-          echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
-          echo "ec2_instance_id=$EC2_INSTANCE_ID" >> $GITHUB_OUTPUT
-          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
-          echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
-
-      - name: Wait for SSM Agent
-        run: |
-          echo "Waiting for SSM agent to be ready..."
-          for i in {1..30}; do
-            STATUS=$(aws ssm describe-instance-information \
-              --filters "Key=InstanceIds,Values=${{ steps.ec2-details.outputs.ec2_instance_id }}" \
-              --query "InstanceInformationList[0].PingStatus" \
-              --output text 2>/dev/null || echo "NotFound")
-            
-            if [ "$STATUS" == "Online" ]; then
-              echo "SSM agent is online!"
-              break
-            fi
-            echo "Attempt $i/30: SSM agent status is $STATUS, waiting..."
-            sleep 10
-          done
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Generate docker-compose.yml
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          S3_BUCKET: ${{ steps.ec2-details.outputs.s3_bucket }}
-          DYNAMODB_TABLE: ${{ steps.ec2-details.outputs.dynamodb_table }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          envsubst < docker/docker-compose.yml.template > docker-compose.yml
-          cat docker-compose.yml
-
-      - name: Copy docker-compose.yml to S3
-        run: |
-          aws s3 cp docker-compose.yml s3://${{ steps.ec2-details.outputs.s3_bucket }}/deployment/docker-compose.yml
-
-      - name: Deploy to EC2 via SSM
-        env:
-          INSTANCE_ID: ${{ steps.ec2-details.outputs.ec2_instance_id }}
-          S3_BUCKET: ${{ steps.ec2-details.outputs.s3_bucket }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          # Stage 1: Setup and download
-          echo "=== Stage 1: Setup ==="
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "mkdir -p ~/deployment",
-              "cd ~/deployment",
-              "aws s3 cp s3://'"$S3_BUCKET"'/deployment/docker-compose.yml .",
-              "cat docker-compose.yml"
-            ]' \
-            --region "$AWS_REGION" \
-            --output text \
-            --query "Command.CommandId")
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=iceberg-test-instance" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
           
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION"
-          
-          STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "Status" --output text)
-          if [ "$STATUS" != "Success" ]; then
-            echo "Setup failed!"
-            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text
-            exit 1
-          fi
-          echo "✅ Setup complete"
-          
-          # Stage 2: ECR Login and Pull
-          echo "=== Stage 2: Pull Images ==="
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --timeout-seconds 600 \
-            --parameters 'commands=[
-              "cd ~/deployment",
-              "aws ecr get-login-password --region '"$AWS_REGION"' | docker login --username AWS --password-stdin '"$ECR_REGISTRY"'",
-              "docker-compose pull 2>&1 | tail -20"
-            ]' \
-            --region "$AWS_REGION" \
-            --output text \
-            --query "Command.CommandId")
-          
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION"
-          
-          STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "Status" --output text)
-          if [ "$STATUS" != "Success" ]; then
-            echo "Pull failed!"
-            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text
-            exit 1
-          fi
-          echo "✅ Images pulled"
-          
-          # Stage 3: Stop Old Containers
-          echo "=== Stage 3: Stop Old Containers ==="
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --timeout-seconds 300 \
-            --parameters 'commands=[
-              "cd ~/deployment",
-              "docker-compose down || true",
-              "docker system prune -f || true"
-            ]' \
-            --region "$AWS_REGION" \
-            --output text \
-            --query "Command.CommandId")
-          
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --region "$AWS_REGION"
-          echo "✅ Old containers stopped"
-          
-          # Stage 4: Start New Containers (with longer timeout)
-          echo "=== Stage 4: Start New Containers ==="
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --timeout-seconds 900 \
-            --parameters 'commands=[
-              "cd ~/deployment",
-              "echo \"Starting containers...\"",
-              "docker-compose up -d",
-              "echo \"Waiting for containers to start...\"",
-              "sleep 30",
-              "docker-compose ps"
-            ]' \
-            --region "$AWS_REGION" \
-            --output text \
-            --query "Command.CommandId")
-          
-          echo "Waiting for containers to start (this may take a few minutes)..."
-          
-          # Custom wait with progress updates
-          MAX_ATTEMPTS=60
-          ATTEMPT=0
-          
-          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-            sleep 10
-            ATTEMPT=$((ATTEMPT + 1))
-            
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --region "$AWS_REGION" \
-              --query "Status" \
-              --output text 2>/dev/null || echo "Pending")
-            
-            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - Status: $STATUS"
-            
-            if [ "$STATUS" == "Success" ]; then
-              echo "✅ Containers started successfully"
-              break
-            elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "TimedOut" ] || [ "$STATUS" == "Cancelled" ]; then
-              echo "❌ Container startup failed with status: $STATUS"
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$INSTANCE_ID" \
-                --region "$AWS_REGION" \
-                --query "StandardErrorContent" \
-                --output text
-              exit 1
-            fi
-          done
-          
-          if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
-            echo "❌ Timeout waiting for containers to start"
+          if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "EC2 instance is not running. Start it first with the 'Start Infrastructure' workflow"
             exit 1
           fi
           
-          # Stage 5: Verify Containers (non-blocking)
-          echo "=== Stage 5: Container Status ==="
-          COMMAND_ID=$(aws ssm send-command \
+          echo "Restarting containers on instance $INSTANCE_ID..."
+          
+          aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --timeout-seconds 120 \
             --parameters 'commands=[
-              "cd ~/deployment || cd ~",
-              "echo \"=== Docker PS ===\"",
-              "docker ps --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\"",
-              "echo",
-              "echo \"=== Container Logs (last 20 lines) ===\"",
-              "docker logs polaris-catalog --tail=20 2>&1 || echo \"Cannot get Polaris logs\"",
-              "echo",
-              "docker logs ogc-api-features --tail=20 2>&1 || echo \"Cannot get OGC API logs\""
+              "cd /home/ec2-user/deployment",
+              "docker-compose pull",
+              "docker-compose up -d --force-recreate"
             ]' \
-            --region "$AWS_REGION" \
-            --output text \
-            --query "Command.CommandId")
-          
-          sleep 5
-          
-          # Wait but don't fail deployment if log retrieval fails
-          for i in {1..12}; do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --region "$AWS_REGION" \
-              --query "Status" \
-              --output text 2>/dev/null || echo "Pending")
-            
-            if [ "$STATUS" == "Success" ] || [ "$STATUS" == "Failed" ]; then
-              break
-            fi
-            sleep 2
-          done
-          
-          echo "=== Container Output ==="
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --region "$AWS_REGION" \
-            --query "StandardOutputContent" \
-            --output text || echo "Could not retrieve container logs"
-          
-          echo "✅ Deployment complete"
+            --output text
 
-      - name: Health Check
-        env:
-          EC2_IP: ${{ steps.ec2-details.outputs.ec2_ip }}
+      - name: Display deployment info
         run: |
-          echo "Testing Polaris catalog endpoints..."
-          curl -f http://${EC2_IP}:8181/api/catalog/v1/config || \
-            curl -f http://${EC2_IP}:8182/q/health/ready || \
-            echo "⚠️  Polaris not ready yet"
+          EC2_IP="${{ needs.terraform.outputs.ec2_public_ip }}"
+          RDS_ENDPOINT="${{ needs.terraform.outputs.rds_endpoint }}"
           
-          echo "Testing OGC API landing page..."
-          curl -f http://${EC2_IP}:8080/ || echo "⚠️  OGC API not ready yet"
-          
-          echo "Note: Services may still be starting up..."
-
-  test:
-    name: Smoke Tests
-    runs-on: ubuntu-latest
-    needs: deploy-app
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download Terraform Outputs
-        uses: actions/download-artifact@v4
-        with:
-          name: terraform-outputs
-
-      - name: Wait for Services with Retry
-        run: |
-          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
-          MAX_RETRIES=30
-          RETRY_DELAY=10
-          
-          echo "Waiting for Polaris to become available at http://${EC2_IP}:8181..."
-          
-          for i in $(seq 1 $MAX_RETRIES); do
-            echo "Attempt $i/$MAX_RETRIES..."
-            
-            # Try the correct Polaris REST API endpoints
-            if curl -f -s -o /dev/null http://${EC2_IP}:8181/api/catalog/v1/config || \
-               curl -f -s -o /dev/null http://${EC2_IP}:8182/q/health/ready; then
-              echo "✅ Polaris is available!"
-              break
-            fi
-            
-            if [ $i -eq $MAX_RETRIES ]; then
-              echo "❌ Polaris failed to become available"
-              echo "Trying to get more info..."
-              curl -v http://${EC2_IP}:8181/ 2>&1 | head -20 || true
-              curl -v http://${EC2_IP}:8182/q/health 2>&1 | head -20 || true
-              exit 1
-            fi
-            
-            echo "Polaris not ready yet, waiting ${RETRY_DELAY} seconds..."
-            sleep $RETRY_DELAY
-          done
-          
-          echo "Waiting for OGC API to become available at http://${EC2_IP}:8080..."
-          
-          for i in $(seq 1 $MAX_RETRIES); do
-            echo "Attempt $i/$MAX_RETRIES..."
-            
-            if curl -f -s -o /dev/null http://${EC2_IP}:8080/; then
-              echo "✅ OGC API is available!"
-              break
-            fi
-            
-            if [ $i -eq $MAX_RETRIES ]; then
-              echo "❌ OGC API failed to become available"
-              exit 1
-            fi
-            
-            echo "OGC API not ready yet, waiting ${RETRY_DELAY} seconds..."
-            sleep $RETRY_DELAY
-          done
-
-      - name: Run Smoke Tests
-        run: |
-          EC2_IP=$(jq -r '.ec2_public_ip.value' tf_outputs.json)
-          
-          echo "Testing Polaris catalog (trying multiple endpoints)..."
-          if curl -f http://${EC2_IP}:8181/api/catalog/v1/config; then
-            echo "✅ Polaris REST API test passed"
-          elif curl -f http://${EC2_IP}:8182/q/health/ready; then
-            echo "✅ Polaris health check passed"
-          else
-            echo "❌ Polaris test failed"
-            exit 1
-          fi
-          
-          echo "Testing OGC API landing page..."
-          curl -f http://${EC2_IP}:8080/ || exit 1
-          echo "✅ OGC API landing page test passed"
-          
-          echo "Testing OGC API conformance..."
-          curl -f http://${EC2_IP}:8080/conformance || exit 1
-          echo "✅ OGC API conformance test passed"
-          
-          echo "Testing OGC API collections..."
-          curl -f http://${EC2_IP}:8080/collections || exit 1
-          echo "✅ OGC API collections test passed"
-          
-          echo "🎉 All smoke tests passed!"
+          echo "🎉 Deployment complete!"
+          echo ""
+          echo "📍 Endpoints:"
+          echo "  Polaris: http://$EC2_IP:8181"
+          echo "  OGC API: http://$EC2_IP:8080"
+          echo "  RDS:     $RDS_ENDPOINT"

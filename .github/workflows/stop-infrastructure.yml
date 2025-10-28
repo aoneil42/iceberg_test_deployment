@@ -1,0 +1,102 @@
+name: Stop Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_rds:
+        description: 'Skip stopping RDS (keep it running)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  stop:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Stop EC2 Instance
+        id: ec2
+        run: |
+          echo "🖥️ Finding running EC2 instance..."
+          
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=iceberg-test-instance" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+          
+          if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "ℹ️ No running EC2 instance found"
+            echo "Checking if already stopped..."
+            
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters \
+                "Name=tag:Name,Values=iceberg-test-instance" \
+                "Name=instance-state-name,Values=stopped" \
+              --query 'Reservations[0].Instances[0].InstanceId' \
+              --output text)
+            
+            if [ "$INSTANCE_ID" != "None" ] && [ -n "$INSTANCE_ID" ]; then
+              echo "✅ EC2 instance $INSTANCE_ID is already stopped"
+            else
+              echo "⚠️ No EC2 instance found with tag Name=iceberg-test-instance"
+            fi
+          else
+            echo "Stopping EC2 instance $INSTANCE_ID..."
+            aws ec2 stop-instances --instance-ids $INSTANCE_ID
+            
+            echo "⏳ Waiting for EC2 to stop..."
+            aws ec2 wait instance-stopped --instance-ids $INSTANCE_ID
+            
+            echo "✅ EC2 instance stopped: $INSTANCE_ID"
+          fi
+
+      - name: Stop RDS Instance
+        if: ${{ !inputs.skip_rds }}
+        run: |
+          echo "🗄️ Checking RDS status..."
+          
+          RDS_STATE=$(aws rds describe-db-instances \
+            --db-instance-identifier iceberg-test-polaris-db \
+            --query 'DBInstances[0].DBInstanceStatus' \
+            --output text 2>/dev/null || echo "not-found")
+          
+          echo "Current RDS state: $RDS_STATE"
+          
+          if [ "$RDS_STATE" = "available" ]; then
+            echo "Stopping RDS instance..."
+            aws rds stop-db-instance \
+              --db-instance-identifier iceberg-test-polaris-db
+            
+            echo "✅ RDS stop initiated"
+            echo ""
+            echo "⚠️ Note: RDS will automatically restart after 7 days if not manually started"
+          elif [ "$RDS_STATE" = "stopped" ]; then
+            echo "✅ RDS is already stopped"
+          elif [ "$RDS_STATE" = "stopping" ]; then
+            echo "✅ RDS is already stopping"
+          else
+            echo "ℹ️ RDS state: $RDS_STATE - no action taken"
+          fi
+
+      - name: Display summary
+        run: |
+          echo "🎉 Infrastructure stop complete!"
+          echo ""
+          echo "💰 Cost Savings:"
+          echo "  - EC2 t4g.medium: ~$0.0336/hour saved"
+          echo "  - RDS t4g.micro:  ~$0.016/hour saved"
+          echo "  - Total savings:  ~$0.0496/hour (~$1.19/day)"
+          echo ""
+          echo "💡 To restart infrastructure, run the 'Start Infrastructure' workflow"

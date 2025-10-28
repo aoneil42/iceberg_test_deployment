@@ -1,6 +1,6 @@
 resource "aws_iam_role" "geospatial_platform" {
   name = "${var.project_name}-ec2-role-${random_id.suffix.hex}"
-
+  
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -13,14 +13,14 @@ resource "aws_iam_role" "geospatial_platform" {
       }
     ]
   })
-
+  
   tags = local.common_tags
 }
 
 resource "aws_iam_instance_profile" "geospatial_platform" {
   name = "${var.project_name}-instance-profile-${random_id.suffix.hex}"
   role = aws_iam_role.geospatial_platform.name
-
+  
   tags = local.common_tags
 }
 
@@ -35,29 +35,23 @@ resource "aws_iam_role_policy" "s3_access" {
       {
         Effect = "Allow"
         Action = [
-          "s3:ListBucket",
-          "s3:GetBucketLocation",
-          "s3:ListBucketVersions"
-        ]
-        Resource = aws_s3_bucket.data_warehouse.arn
-      },
-      {
-        Effect = "Allow"
-        Action = [
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject",
-          "s3:GetObjectVersion"
+          "s3:ListBucket"
         ]
-        Resource = "${aws_s3_bucket.data_warehouse.arn}/*"
+        Resource = [
+          aws_s3_bucket.warehouse.arn,
+          "${aws_s3_bucket.warehouse.arn}/*"
+        ]
       }
     ]
   })
 }
 
-# DynamoDB access policy
-resource "aws_iam_role_policy" "dynamodb_access" {
-  name = "dynamodb-access"
+# RDS access policy for connecting to database
+resource "aws_iam_role_policy" "rds_access" {
+  name = "rds-access"
   role = aws_iam_role.geospatial_platform.id
 
   policy = jsonencode({
@@ -66,21 +60,10 @@ resource "aws_iam_role_policy" "dynamodb_access" {
       {
         Effect = "Allow"
         Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:BatchGetItem",
-          "dynamodb:BatchWriteItem",
-          "dynamodb:DescribeTable"
+          "rds:DescribeDBInstances",
+          "rds:DescribeDBClusters"
         ]
-        Resource = [
-          aws_dynamodb_table.polaris_metadata.arn,
-          "${aws_dynamodb_table.polaris_metadata.arn}/index/*",
-          aws_dynamodb_table.polaris_backend.arn
-        ]
+        Resource = "*"
       }
     ]
   })
@@ -97,21 +80,12 @@ resource "aws_iam_role_policy" "ecr_access" {
       {
         Effect = "Allow"
         Action = [
-          "ecr:GetAuthorizationToken"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
+          "ecr:GetAuthorizationToken",
           "ecr:BatchCheckLayerAvailability",
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage"
         ]
-        Resource = [
-          aws_ecr_repository.polaris.arn,
-          aws_ecr_repository.ogc_api.arn
-        ]
+        Resource = "*"
       }
     ]
   })
@@ -133,22 +107,33 @@ resource "aws_iam_role_policy" "cloudwatch_logs" {
           "logs:PutLogEvents",
           "logs:DescribeLogStreams"
         ]
-        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/geospatial-platform/*"
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/ec2/${var.project_name}*"
       }
     ]
   })
 }
 
-# SSM Session Manager policy (optional, for SSH-less access)
-resource "aws_iam_role_policy_attachment" "ssm_managed_instance" {
+# Systems Manager policy for Session Manager access
+resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
   role       = aws_iam_role.geospatial_platform.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Additional SSM policy for session manager
-resource "aws_iam_role_policy" "ssm_access" {
-  name = "ssm-access"
-  role = aws_iam_role.geospatial_platform.id
+# IAM role for GitHub Actions
+resource "aws_iam_user" "github_actions" {
+  name = "${var.project_name}-github-actions"
+  
+  tags = local.common_tags
+}
+
+resource "aws_iam_access_key" "github_actions" {
+  user = aws_iam_user.github_actions.name
+}
+
+# Policy for GitHub Actions to manage infrastructure
+resource "aws_iam_user_policy" "github_actions" {
+  name = "github-actions-policy"
+  user = aws_iam_user.github_actions.name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -156,15 +141,42 @@ resource "aws_iam_role_policy" "ssm_access" {
       {
         Effect = "Allow"
         Action = [
-          "ssm:UpdateInstanceInformation",
-          "ssmmessages:CreateControlChannel",
-          "ssmmessages:CreateDataChannel",
-          "ssmmessages:OpenControlChannel",
-          "ssmmessages:OpenDataChannel",
-          "s3:GetEncryptionConfiguration"
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+          "ec2:StartInstances",
+          "ec2:StopInstances",
+          "ec2:DescribeSecurityGroups",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "rds:DescribeDBInstances",
+          "rds:StartDBInstance",
+          "rds:StopDBInstance"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload"
         ]
         Resource = "*"
       }
     ]
   })
 }
+
+# Data source to get current AWS account ID
+data "aws_caller_identity" "current" {}

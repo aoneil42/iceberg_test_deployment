@@ -1,0 +1,174 @@
+name: Start Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_rds:
+        description: 'Skip starting RDS (if already running)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Start RDS Instance
+        if: ${{ !inputs.skip_rds }}
+        run: |
+          echo "🗄️ Checking RDS status..."
+          
+          RDS_STATE=$(aws rds describe-db-instances \
+            --db-instance-identifier iceberg-test-polaris-db \
+            --query 'DBInstances[0].DBInstanceStatus' \
+            --output text 2>/dev/null || echo "not-found")
+          
+          echo "Current RDS state: $RDS_STATE"
+          
+          if [ "$RDS_STATE" = "stopped" ]; then
+            echo "Starting RDS instance..."
+            aws rds start-db-instance \
+              --db-instance-identifier iceberg-test-polaris-db
+            
+            echo "⏳ Waiting for RDS to be available (this may take 5-10 minutes)..."
+            aws rds wait db-instance-available \
+              --db-instance-identifier iceberg-test-polaris-db \
+              --max-attempts 60 \
+              --delay 10
+            
+            echo "✅ RDS is now available!"
+          elif [ "$RDS_STATE" = "available" ]; then
+            echo "✅ RDS is already running"
+          elif [ "$RDS_STATE" = "starting" ]; then
+            echo "⏳ RDS is already starting, waiting for it..."
+            aws rds wait db-instance-available \
+              --db-instance-identifier iceberg-test-polaris-db
+            echo "✅ RDS is now available!"
+          else
+            echo "⚠️ RDS state: $RDS_STATE - proceeding anyway"
+          fi
+
+      - name: Get RDS Endpoint
+        id: rds
+        run: |
+          RDS_ENDPOINT=$(aws rds describe-db-instances \
+            --db-instance-identifier iceberg-test-polaris-db \
+            --query 'DBInstances[0].Endpoint.Address' \
+            --output text)
+          
+          echo "endpoint=$RDS_ENDPOINT" >> $GITHUB_OUTPUT
+          echo "RDS Endpoint: $RDS_ENDPOINT"
+
+      - name: Start EC2 Instance
+        id: ec2
+        run: |
+          echo "🖥️ Finding EC2 instance..."
+          
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=iceberg-test-instance" \
+              "Name=instance-state-name,Values=stopped,stopping" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+          
+          if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "Checking if instance is already running..."
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters \
+                "Name=tag:Name,Values=iceberg-test-instance" \
+                "Name=instance-state-name,Values=running" \
+              --query 'Reservations[0].Instances[0].InstanceId' \
+              --output text)
+            
+            if [ "$INSTANCE_ID" != "None" ] && [ -n "$INSTANCE_ID" ]; then
+              echo "✅ EC2 instance $INSTANCE_ID is already running"
+              echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+              
+              PUBLIC_IP=$(aws ec2 describe-instances \
+                --instance-ids $INSTANCE_ID \
+                --query 'Reservations[0].Instances[0].PublicIpAddress' \
+                --output text)
+              echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              echo "❌ No EC2 instance found with tag Name=iceberg-test-instance"
+              exit 1
+            fi
+          fi
+          
+          echo "Starting EC2 instance $INSTANCE_ID..."
+          aws ec2 start-instances --instance-ids $INSTANCE_ID
+          
+          echo "⏳ Waiting for EC2 instance to be running..."
+          aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+          
+          echo "⏳ Waiting for status checks to pass..."
+          aws ec2 wait instance-status-ok --instance-ids $INSTANCE_ID
+          
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+          
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          
+          echo "✅ EC2 instance is running!"
+          echo "Instance ID: $INSTANCE_ID"
+          echo "Public IP: $PUBLIC_IP"
+
+      - name: Wait for services to start
+        run: |
+          echo "⏳ Waiting 2 minutes for services to initialize..."
+          sleep 120
+
+      - name: Test Polaris endpoint
+        run: |
+          PUBLIC_IP="${{ steps.ec2.outputs.public_ip }}"
+          
+          echo "🧪 Testing Polaris health endpoint..."
+          MAX_ATTEMPTS=10
+          ATTEMPT=0
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            if curl -sf "http://$PUBLIC_IP:8182/q/health" > /dev/null; then
+              echo "✅ Polaris is healthy!"
+              break
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+            if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+              echo "⚠️ Polaris health check timeout after $MAX_ATTEMPTS attempts"
+              echo "This may be normal if services are still starting up"
+              exit 0
+            fi
+            
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS - waiting 15s..."
+            sleep 15
+          done
+
+      - name: Display endpoints
+        run: |
+          PUBLIC_IP="${{ steps.ec2.outputs.public_ip }}"
+          RDS_ENDPOINT="${{ steps.rds.outputs.endpoint }}"
+          
+          echo "🎉 Infrastructure is ready!"
+          echo ""
+          echo "📍 Endpoints:"
+          echo "  Polaris Catalog: http://$PUBLIC_IP:8181"
+          echo "  Polaris Health:  http://$PUBLIC_IP:8182/q/health"
+          echo "  OGC API:         http://$PUBLIC_IP:8080"
+          echo "  RDS Endpoint:    $RDS_ENDPOINT:5432"
+          echo ""
+          echo "💡 To stop infrastructure, run the 'Stop Infrastructure' workflow"
