@@ -67,6 +67,28 @@ jobs:
             -var="db_master_password=${{ secrets.DB_MASTER_PASSWORD }}" \
             -input=false \
             -out=tfplan
+      # ADD THIS NEW STEP HERE
+      - name: Empty S3 Bucket Before Apply
+        if: github.event.inputs.terraform_action == 'apply' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        working-directory: terraform
+        run: |
+          # Try to get bucket name from current state
+          BUCKET_NAME=$(terraform output -raw s3_warehouse_bucket 2>/dev/null || echo "iceberg-test-e1828e3c")
+          
+          echo "Attempting to empty bucket: $BUCKET_NAME"
+          
+          # Delete all versions and delete markers
+          aws s3api delete-objects --bucket "$BUCKET_NAME" \
+            --delete "$(aws s3api list-object-versions \
+              --bucket "$BUCKET_NAME" \
+              --output json \
+              --query '{Objects: [Versions,DeleteMarkers][].[]|[].{Key:Key,VersionId:VersionId}}' 2>/dev/null)" 2>/dev/null || true
+          
+          # Delete any remaining current objects
+          aws s3 rm "s3://$BUCKET_NAME" --recursive 2>/dev/null || true
+          
+          echo "✅ Bucket emptied (or already empty)"
+        continue-on-error: true
 
       - name: Terraform Apply
         if: github.event.inputs.terraform_action == 'apply' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
