@@ -1,0 +1,163 @@
+name: Start/Stop EC2 Instance
+
+on:
+  schedule:
+    # Start at 8 AM EST (1 PM UTC) Monday-Friday
+    - cron: '0 13 * * 1-5'
+    # Stop at 6 PM EST (11 PM UTC) Monday-Friday
+    - cron: '0 23 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'start'
+        type: choice
+        options:
+          - start
+          - stop
+          - status
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  manage-instance:
+    name: Manage EC2 Instance
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+          terraform_wrapper: false
+
+      - name: Get Instance ID from Terraform State
+        id: get-instance
+        run: |
+          cd terraform
+          terraform init \
+            -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="key=geospatial-platform/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+          
+          INSTANCE_ID=$(terraform output -raw instance_id 2>/dev/null || echo "")
+          
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "❌ No instance found in Terraform state"
+            exit 1
+          fi
+          
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "Found instance: $INSTANCE_ID"
+
+      - name: Determine Action
+        id: determine-action
+        run: |
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            # Check which cron triggered
+            if [ "${{ github.event.schedule }}" == "0 13 * * 1-5" ]; then
+              echo "action=start" >> $GITHUB_OUTPUT
+              echo "Scheduled START action"
+            else
+              echo "action=stop" >> $GITHUB_OUTPUT
+              echo "Scheduled STOP action"
+            fi
+          else
+            echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+            echo "Manual action: ${{ github.event.inputs.action }}"
+          fi
+
+      - name: Get Current Status
+        id: status
+        run: |
+          INSTANCE_ID="${{ steps.get-instance.outputs.instance_id }}"
+          
+          STATUS=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].State.Name' \
+            --output text)
+          
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "Current status: $STATUS"
+
+      - name: Start Instance
+        if: steps.determine-action.outputs.action == 'start' && steps.status.outputs.status != 'running'
+        run: |
+          INSTANCE_ID="${{ steps.get-instance.outputs.instance_id }}"
+          
+          echo "Starting instance $INSTANCE_ID..."
+          aws ec2 start-instances --instance-ids "$INSTANCE_ID"
+          
+          echo "Waiting for instance to be running..."
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+          
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+          
+          echo "✅ Instance started successfully!"
+          echo "Public IP: $PUBLIC_IP"
+          echo "Polaris: http://$PUBLIC_IP:8181/v1/config"
+          echo "OGC API: http://$PUBLIC_IP:8080/"
+
+      - name: Stop Instance
+        if: steps.determine-action.outputs.action == 'stop' && steps.status.outputs.status == 'running'
+        run: |
+          INSTANCE_ID="${{ steps.get-instance.outputs.instance_id }}"
+          
+          echo "Stopping instance $INSTANCE_ID..."
+          aws ec2 stop-instances --instance-ids "$INSTANCE_ID"
+          
+          echo "Waiting for instance to be stopped..."
+          aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+          
+          echo "✅ Instance stopped successfully!"
+          echo "This will save approximately $0.50-0.75 per day in compute costs."
+
+      - name: Display Status
+        if: steps.determine-action.outputs.action == 'status'
+        run: |
+          INSTANCE_ID="${{ steps.get-instance.outputs.instance_id }}"
+          STATUS="${{ steps.status.outputs.status }}"
+          
+          echo "Instance ID: $INSTANCE_ID"
+          echo "Status: $STATUS"
+          
+          if [ "$STATUS" == "running" ]; then
+            PUBLIC_IP=$(aws ec2 describe-instances \
+              --instance-ids "$INSTANCE_ID" \
+              --query 'Reservations[0].Instances[0].PublicIpAddress' \
+              --output text)
+            echo "Public IP: $PUBLIC_IP"
+            echo "Polaris: http://$PUBLIC_IP:8181/v1/config"
+            echo "OGC API: http://$PUBLIC_IP:8080/"
+          fi
+
+      - name: Skip Message
+        if: |
+          (steps.determine-action.outputs.action == 'start' && steps.status.outputs.status == 'running') ||
+          (steps.determine-action.outputs.action == 'stop' && steps.status.outputs.status != 'running')
+        run: |
+          STATUS="${{ steps.status.outputs.status }}"
+          ACTION="${{ steps.determine-action.outputs.action }}"
+          
+          if [ "$ACTION" == "start" ]; then
+            echo "ℹ️ Instance is already running"
+          else
+            echo "ℹ️ Instance is already stopped (status: $STATUS)"
+          fi
