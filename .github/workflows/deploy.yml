@@ -67,7 +67,7 @@ jobs:
             -var="db_master_password=${{ secrets.DB_MASTER_PASSWORD }}" \
             -input=false \
             -out=tfplan
-      # ADD THIS NEW STEP HERE
+
       - name: Empty S3 Bucket Before Apply
         if: github.event.inputs.terraform_action == 'apply' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         working-directory: terraform
@@ -186,7 +186,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Restart Docker containers on EC2
+      - name: Deploy Docker containers on EC2
         run: |
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=iceberg-test-instance" \
@@ -195,26 +195,85 @@ jobs:
             --output text)
           
           if [ "$INSTANCE_ID" = "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "⚠️ EC2 instance is not running. Skipping container restart."
-            echo "Use 'Start Infrastructure' workflow to start EC2 and RDS first."
+            echo "⚠️ EC2 instance is not running. Skipping container deployment."
             exit 0
           fi
           
-          echo "Restarting containers on instance $INSTANCE_ID..."
+          echo "Deploying containers on instance $INSTANCE_ID..."
+          
+          # Get RDS endpoint and S3 bucket
+          RDS_ENDPOINT=$(aws rds describe-db-instances \
+            --db-instance-identifier iceberg-test-polaris-db \
+            --query 'DBInstances[0].Endpoint.Address' \
+            --output text)
+          
+          S3_BUCKET=$(aws s3 ls | grep iceberg-test-warehouse | awk '{print $3}')
+          
+          echo "RDS Endpoint: $RDS_ENDPOINT"
+          echo "S3 Bucket: $S3_BUCKET"
           
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
+            --parameters commands='[
+              "set -e",
+              "echo \"Creating deployment directory...\"",
+              "mkdir -p /home/ec2-user/deployment",
               "cd /home/ec2-user/deployment",
+              "echo \"Generating docker-compose.yml...\"",
+              "cat > docker-compose.yml << \"EOFCOMPOSE\"",
+              "version: \"3.8\"",
+              "",
+              "services:",
+              "  polaris:",
+              "    image: 735891086824.dkr.ecr.us-west-2.amazonaws.com/polaris-catalog:latest",
+              "    ports:",
+              "      - \"8181:8181\"",
+              "    environment:",
+              "      - AWS_REGION=us-west-2",
+              "      - POLARIS_BOOTSTRAP_TYPE=postgres",
+              "      - POLARIS_PERSISTENCE_TYPE=postgres",
+              "      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://'"$RDS_ENDPOINT"':5432/polaris",
+              "      - QUARKUS_DATASOURCE_USERNAME=polaris",
+              "      - QUARKUS_DATASOURCE_PASSWORD=${{ secrets.DB_MASTER_PASSWORD }}",
+              "    restart: unless-stopped",
+              "",
+              "  ogc-api:",
+              "    image: 735891086824.dkr.ecr.us-west-2.amazonaws.com/ogc-api-features:latest",
+              "    ports:",
+              "      - \"8080:8080\"",
+              "    environment:",
+              "      - AWS_REGION=us-west-2",
+              "      - POLARIS_URI=http://polaris:8181",
+              "      - S3_BUCKET='"$S3_BUCKET"'",
+              "    depends_on:",
+              "      - polaris",
+              "    restart: unless-stopped",
+              "EOFCOMPOSE",
+              "echo \"Logging into ECR...\"",
+              "aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 735891086824.dkr.ecr.us-west-2.amazonaws.com",
+              "echo \"Pulling Docker images...\"",
               "docker-compose pull",
-              "docker-compose up -d --force-recreate"
+              "echo \"Starting containers...\"",
+              "docker-compose up -d",
+              "echo \"✅ Deployment complete!\"",
+              "echo \"Container status:\"",
+              "docker-compose ps"
             ]' \
             --output text \
             --query 'Command.CommandId')
           
           echo "SSM Command ID: $COMMAND_ID"
-          echo "✅ Container restart initiated"
+          echo "Waiting 30 seconds for deployment to complete..."
+          sleep 30
+          
+          # Get command results
+          echo "Command Status:"
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query '[Status,StandardOutputContent,StandardErrorContent]' \
+            --output text || true
 
       - name: Display deployment info
         run: |
@@ -227,3 +286,7 @@ jobs:
           echo "  Polaris: http://$EC2_IP:8181"
           echo "  OGC API: http://$EC2_IP:8080"
           echo "  RDS:     $RDS_ENDPOINT"
+          echo ""
+          echo "🔍 Test the endpoints:"
+          echo "  curl http://$EC2_IP:8181/api/catalog/v1/config"
+          echo "  curl http://$EC2_IP:8080/"
