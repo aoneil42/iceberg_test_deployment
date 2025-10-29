@@ -11,20 +11,20 @@ resource "aws_instance" "geospatial" {
 
   user_data = templatefile("${path.module}/user_data.sh", {
     # PostgreSQL/RDS configuration
-    db_host     = aws_db_instance.polaris.address
-    db_port     = aws_db_instance.polaris.port
-    db_name     = aws_db_instance.polaris.db_name
-    db_username = aws_db_instance.polaris.username
-    db_password = var.db_master_password
-
+    db_host              = aws_db_instance.polaris.address
+    db_port              = aws_db_instance.polaris.port
+    db_name              = aws_db_instance.polaris.db_name
+    db_username          = aws_db_instance.polaris.username
+    db_password          = var.db_master_password
+    
     # Polaris configuration
     polaris_client_id     = "default-client"
     polaris_client_secret = var.polaris_client_secret
-
+    
     # AWS configuration
-    aws_region          = var.aws_region
-    ecr_registry        = aws_ecr_repository.polaris.repository_url
-    s3_warehouse_bucket = aws_s3_bucket.warehouse.id
+    aws_region           = var.aws_region
+    ecr_registry         = aws_ecr_repository.polaris.repository_url
+    s3_warehouse_bucket  = aws_s3_bucket.warehouse.id
   })
 
   root_block_device {
