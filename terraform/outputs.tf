@@ -33,11 +33,6 @@ output "rds_address" {
   value       = aws_db_instance.polaris.address
 }
 
-output "warehouse_bucket" {
-  description = "S3 warehouse bucket name"
-  value       = aws_s3_bucket.warehouse.id
-}
-
 output "frontend_bucket" {
   description = "Frontend S3 bucket name"
   value       = aws_s3_bucket.frontend.id
@@ -46,4 +41,9 @@ output "frontend_bucket" {
 output "frontend_url" {
   description = "Frontend S3 website URL"
   value       = "http://${aws_s3_bucket.frontend.bucket}.s3-website-${var.aws_region}.amazonaws.com"
+}
+
+output "warehouse_bucket" {
+  description = "S3 warehouse bucket name"
+  value       = aws_s3_bucket.data_warehouse.id
 }

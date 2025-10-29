@@ -7,7 +7,7 @@ resource "aws_instance" "geospatial" {
     aws_security_group.geospatial.id
   ]
 
-  iam_instance_profile = aws_iam_instance_profile.geospatial.name
+  iam_instance_profile = aws_iam_instance_profile.geospatial_platform.name
 
   user_data = templatefile("${path.module}/user_data.sh", {
     # PostgreSQL/RDS configuration
@@ -24,7 +24,7 @@ resource "aws_instance" "geospatial" {
     # AWS configuration
     aws_region          = var.aws_region
     ecr_registry        = aws_ecr_repository.polaris.repository_url
-    s3_warehouse_bucket = aws_s3_bucket.warehouse.id
+    s3_warehouse_bucket = aws_s3_bucket.data_warehouse.id
   })
 
   root_block_device {

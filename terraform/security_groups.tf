@@ -1,8 +1,12 @@
 # Security group for EC2 instance
+# Note: data "aws_vpc" "default" is defined in main.tf
+
 resource "aws_security_group" "geospatial" {
   name_prefix = "${var.project_name}-ec2-"
   description = "Security group for geospatial platform EC2 instance"
-  vpc_id      = aws_vpc.main.id
+
+  # Using default VPC data source from main.tf
+  vpc_id = data.aws_vpc.default.id
 
   # SSH access (using inline rules for list support)
   dynamic "ingress" {
@@ -62,5 +66,5 @@ resource "aws_security_group" "geospatial" {
   }
 }
 
-# Note: RDS security group is defined in rds.tf (line 60)
+# Note: RDS security group is defined in rds.tf
 # to keep RDS-related resources together
