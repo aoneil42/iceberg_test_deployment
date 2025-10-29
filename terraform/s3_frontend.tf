@@ -61,5 +61,3 @@ resource "aws_s3_bucket_cors_configuration" "frontend" {
     max_age_seconds = 3000
   }
 }
-
-data "aws_caller_identity" "current" {}
