@@ -1,86 +1,98 @@
-resource "aws_security_group" "geospatial_platform" {
-  name        = "${var.project_name}-sg-${random_id.suffix.hex}"
+# Security group for EC2 instance
+resource "aws_security_group" "geospatial" {
+  name_prefix = "${var.project_name}-ec2-"
   description = "Security group for geospatial platform EC2 instance"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = aws_vpc.main.id
+
+  # SSH access (using inline rules for list support)
+  dynamic "ingress" {
+    for_each = var.allowed_ssh_cidr
+    content {
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
+      description = "SSH from ${ingress.value}"
+    }
+  }
+
+  # Polaris API access
+  dynamic "ingress" {
+    for_each = var.allowed_api_cidr
+    content {
+      from_port   = 8181
+      to_port     = 8181
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
+      description = "Polaris from ${ingress.value}"
+    }
+  }
+
+  # OGC API access
+  dynamic "ingress" {
+    for_each = var.allowed_api_cidr
+    content {
+      from_port   = 8080
+      to_port     = 8080
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
+      description = "OGC API from ${ingress.value}"
+    }
+  }
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "All outbound traffic"
+  }
 
   tags = merge(
-    local.common_tags,
+    var.tags,
     {
-      Name = "${var.project_name}-sg"
+      Name        = "${var.project_name}-ec2-sg"
+      Environment = var.environment
     }
   )
-}
 
-# SSH access
-resource "aws_vpc_security_group_ingress_rule" "ssh" {
-  security_group_id = aws_security_group.geospatial_platform.id
-
-  description = "SSH access"
-  from_port   = 22
-  to_port     = 22
-  ip_protocol = "tcp"
-  cidr_ipv4   = var.allowed_ssh_cidr
-
-  tags = {
-    Name = "ssh-access"
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
-# Polaris REST catalog
-resource "aws_vpc_security_group_ingress_rule" "polaris" {
-  security_group_id = aws_security_group.geospatial_platform.id
+# Security group for RDS PostgreSQL
+resource "aws_security_group" "rds" {
+  name_prefix = "${var.project_name}-rds-"
+  description = "Security group for Polaris RDS PostgreSQL"
+  vpc_id      = aws_vpc.main.id
 
-  description = "Polaris catalog API"
-  from_port   = 8181
-  to_port     = 8181
-  ip_protocol = "tcp"
-  cidr_ipv4   = var.allowed_api_cidr
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.geospatial.id]
+    description     = "PostgreSQL from EC2"
+  }
 
-  tags = {
-    Name = "polaris-api"
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "All outbound traffic"
+  }
+
+  tags = merge(
+    var.tags,
+    {
+      Name        = "${var.project_name}-rds-sg"
+      Environment = var.environment
+    }
+  )
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
-
-# OGC API Features
-resource "aws_vpc_security_group_ingress_rule" "ogc_api" {
-  security_group_id = aws_security_group.geospatial_platform.id
-
-  description = "OGC API Features"
-  from_port   = 8080
-  to_port     = 8080
-  ip_protocol = "tcp"
-  cidr_ipv4   = var.allowed_api_cidr
-
-  tags = {
-    Name = "ogc-api"
-  }
-}
-
-# HTTPS (for future ALB)
-resource "aws_vpc_security_group_ingress_rule" "https" {
-  security_group_id = aws_security_group.geospatial_platform.id
-
-  description = "HTTPS access"
-  from_port   = 443
-  to_port     = 443
-  ip_protocol = "tcp"
-  cidr_ipv4   = "0.0.0.0/0"
-
-  tags = {
-    Name = "https-access"
-  }
-}
-
-# Allow all outbound traffic
-resource "aws_vpc_security_group_egress_rule" "all" {
-  security_group_id = aws_security_group.geospatial_platform.id
-
-  description = "Allow all outbound traffic"
-  ip_protocol = "-1"
-  cidr_ipv4   = "0.0.0.0/0"
-
-  tags = {
-    Name = "all-outbound"
-  }
-}
-

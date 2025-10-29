@@ -16,6 +16,12 @@ variable "project_name" {
   default     = "geospatial-platform"
 }
 
+variable "s3_bucket_prefix" {
+  description = "Prefix for S3 bucket names"
+  type        = string
+  default     = "geospatial-platform"
+}
+
 variable "instance_type" {
   description = "EC2 instance type"
   type        = string
@@ -29,18 +35,24 @@ variable "key_name" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR block allowed to SSH to EC2 instance"
+  description = "CIDR blocks allowed to SSH to EC2 instance"
   type        = list(string)
   default     = ["0.0.0.0/0"] # Change this to your IP!
 }
 
 variable "allowed_api_cidr" {
-  description = "CIDR block allowed to access API endpoints"
+  description = "CIDR blocks allowed to access API endpoints"
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
 
 # PostgreSQL/RDS Configuration
+variable "db_master_username" {
+  description = "Master username for RDS PostgreSQL"
+  type        = string
+  default     = "polaris"
+}
+
 variable "db_master_password" {
   description = "Master password for RDS PostgreSQL"
   type        = string
