@@ -1,6 +1,6 @@
 resource "aws_iam_role" "geospatial_platform" {
   name = "${var.project_name}-ec2-role-${random_id.suffix.hex}"
-  
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -13,14 +13,14 @@ resource "aws_iam_role" "geospatial_platform" {
       }
     ]
   })
-  
+
   tags = local.common_tags
 }
 
 resource "aws_iam_instance_profile" "geospatial_platform" {
   name = "${var.project_name}-instance-profile-${random_id.suffix.hex}"
   role = aws_iam_role.geospatial_platform.name
-  
+
   tags = local.common_tags
 }
 
@@ -122,7 +122,7 @@ resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
 # IAM role for GitHub Actions
 resource "aws_iam_user" "github_actions" {
   name = "${var.project_name}-github-actions"
-  
+
   tags = local.common_tags
 }
 

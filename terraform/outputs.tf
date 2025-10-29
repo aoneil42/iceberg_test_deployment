@@ -61,7 +61,7 @@ output "github_actions_secret_access_key" {
 output "deployment_commands" {
   description = "Commands to deploy the application"
   sensitive   = true
-  value = <<-EOT
+  value       = <<-EOT
     # Connect to EC2 via Session Manager (no SSH key needed):
     aws ssm start-session --target ${aws_instance.geospatial_platform.id}
     

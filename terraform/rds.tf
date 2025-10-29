@@ -37,8 +37,8 @@ resource "aws_db_instance" "polaris" {
   publicly_accessible = false
 
   backup_retention_period = 7
-  backup_window          = "03:00-04:00"
-  maintenance_window     = "mon:04:00-mon:05:00"
+  backup_window           = "03:00-04:00"
+  maintenance_window      = "mon:04:00-mon:05:00"
 
   skip_final_snapshot       = true
   final_snapshot_identifier = "${var.project_name}-polaris-final-snapshot-${random_id.suffix.hex}"
