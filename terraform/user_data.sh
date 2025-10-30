@@ -15,8 +15,8 @@ curl -L "https://github.com/docker/compose/releases/latest/download/docker-compo
 chmod +x /usr/local/bin/docker-compose
 
 # Install PostgreSQL client for health checks
-amazon-linux-extras enable postgresql14
-yum install -y postgresql
+# Note: AL2023 has PostgreSQL 15 in default repos, no need for amazon-linux-extras
+yum install -y postgresql15
 
 # Create deployment directory
 mkdir -p /home/ec2-user/deployment
@@ -40,15 +40,15 @@ services:
       POSTGRES_DB: ${db_name}
       POSTGRES_USER: ${db_username}
       POSTGRES_PASSWORD: ${db_password}
-      
+
       # Polaris configuration
       POLARIS_CLIENT_ID: ${polaris_client_id}
       POLARIS_CLIENT_SECRET: ${polaris_client_secret}
-      
+
       # AWS S3 configuration
       AWS_REGION: ${aws_region}
       S3_WAREHOUSE_BUCKET: ${s3_warehouse_bucket}
-      
+
       # Java options for memory
       JAVA_OPTS: "-Xmx2g -Xms1g"
     healthcheck:
@@ -74,17 +74,17 @@ services:
       POLARIS_ENDPOINT: http://polaris:8181
       POLARIS_CLIENT_ID: ${polaris_client_id}
       POLARIS_CLIENT_SECRET: ${polaris_client_secret}
-      
+
       # AWS S3 configuration
       AWS_REGION: ${aws_region}
       S3_WAREHOUSE_BUCKET: ${s3_warehouse_bucket}
-      
+
       # OGC API configuration
       OGC_API_TITLE: "Geospatial Features API"
       OGC_API_DESCRIPTION: "OGC API Features service powered by Apache Iceberg"
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "8080"
-      
+
       # DuckDB configuration
       DUCKDB_MEMORY_LIMIT: "1GB"
       DUCKDB_THREADS: "2"
