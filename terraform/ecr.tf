@@ -1,7 +1,7 @@
 # ECR Repositories for Docker images
 
 resource "aws_ecr_repository" "polaris" {
-  name                 = "polaris-catalog"
+  name                 = "polaris"
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
@@ -16,7 +16,7 @@ resource "aws_ecr_repository" "polaris" {
 }
 
 resource "aws_ecr_repository" "ogc_api" {
-  name                 = "ogc-api-features"
+  name                 = "ogc-api"
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
