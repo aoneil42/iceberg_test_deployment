@@ -22,8 +22,9 @@ resource "aws_instance" "geospatial" {
     polaris_client_secret = var.polaris_client_secret
 
     # AWS configuration
-    aws_region          = var.aws_region
-    ecr_registry        = aws_ecr_repository.polaris.repository_url
+    aws_region = var.aws_region
+    # Extract registry URL from full repository URL (removes /polaris suffix)
+    ecr_registry        = split("/", data.aws_ecr_repository.polaris.repository_url)[0]
     s3_warehouse_bucket = aws_s3_bucket.data_warehouse.id
   })
 
