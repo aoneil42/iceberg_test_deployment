@@ -236,23 +236,39 @@ jobs:
           echo "Testing endpoints on $EC2_IP..."
           
           # Wait for services to be ready (max 5 minutes)
+          POLARIS_READY=false
           for i in {1..30}; do
             if curl -sf "http://$EC2_IP:8181/v1/config" > /dev/null; then
               echo "✅ Polaris is ready!"
+              POLARIS_READY=true
               break
             fi
             echo "Waiting for Polaris... ($i/30)"
             sleep 10
           done
           
+          if [ "$POLARIS_READY" = false ]; then
+            echo "❌ Polaris failed to start after 5 minutes"
+            echo "Check user data logs: ssh ec2-user@$EC2_IP 'sudo tail -100 /var/log/cloud-init-output.log'"
+            exit 1
+          fi
+          
+          OGC_READY=false
           for i in {1..30}; do
             if curl -sf "http://$EC2_IP:8080/" > /dev/null; then
               echo "✅ OGC API is ready!"
+              OGC_READY=true
               break
             fi
             echo "Waiting for OGC API... ($i/30)"
             sleep 10
           done
+          
+          if [ "$OGC_READY" = false ]; then
+            echo "❌ OGC API failed to start after 5 minutes"
+            echo "Check user data logs: ssh ec2-user@$EC2_IP 'sudo tail -100 /var/log/cloud-init-output.log'"
+            exit 1
+          fi
 
       - name: Display deployment info
         run: |

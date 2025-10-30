@@ -49,8 +49,8 @@ resource "aws_instance" "geospatial" {
 
   lifecycle {
     ignore_changes = [
-      ami,
-      user_data
+      ami
+      # Removed user_data from ignore_changes so script updates trigger recreation
     ]
   }
 }
