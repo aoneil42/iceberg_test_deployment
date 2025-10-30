@@ -78,7 +78,7 @@ jobs:
   build-images:
     name: Build Docker Images
     runs-on: ubuntu-latest
-    needs: [validate, deploy-infra]
+    needs: validate
     permissions:
       id-token: write
       contents: read
@@ -96,6 +96,26 @@ jobs:
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create ECR repositories if they don't exist
+        run: |
+          # Create polaris repository if it doesn't exist
+          aws ecr describe-repositories --repository-names polaris --region ${{ env.AWS_REGION }} 2>/dev/null || \
+            aws ecr create-repository \
+              --repository-name polaris \
+              --region ${{ env.AWS_REGION }} \
+              --image-scanning-configuration scanOnPush=true \
+              --image-tag-mutability MUTABLE
+          
+          # Create ogc-api repository if it doesn't exist
+          aws ecr describe-repositories --repository-names ogc-api --region ${{ env.AWS_REGION }} 2>/dev/null || \
+            aws ecr create-repository \
+              --repository-name ogc-api \
+              --region ${{ env.AWS_REGION }} \
+              --image-scanning-configuration scanOnPush=true \
+              --image-tag-mutability MUTABLE
+          
+          echo "✅ ECR repositories are ready"
 
       - name: Build and push Polaris image
         env:
